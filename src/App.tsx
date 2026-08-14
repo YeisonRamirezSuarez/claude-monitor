@@ -15,6 +15,7 @@ export default function App() {
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(true);
 
   // Dos refresh pueden estar en vuelo a la vez (una acción y el listener de
@@ -52,8 +53,14 @@ export default function App() {
 
   const activeProfile = profileList?.profiles.find((p) => p.id === profileList.activeProfileId);
 
+  // Las sesiones son un pozo compartido entre todas las cuentas, así que vacío
+  // significa que no hay ninguna en ningún lado.
+  const emptyHint =
+    'Todavía no hay sesiones. Creá la primera con "Nueva sesión…": se abre con la cuenta marcada arriba.';
+
   const run = async (action: () => Promise<Result<unknown>>) => {
     setError('');
+    setNotice('');
     try {
       const result = await action();
       if (!result.ok) setError(result.error);
@@ -72,6 +79,12 @@ export default function App() {
         onSelectSlug={setSelectedSlug}
         onSelectProfile={(id) => {
           setSelectedSlug(null);
+          // El cambio se pinta ya. El refresco que viene detrás vuelve a
+          // consultar el consumo de las cuentas y tarda medio segundo: sin
+          // esto, hacés clic y no pasa nada visible hasta que termina, que se
+          // lee como que el clic no funcionó. Si la llamada falla, el refresco
+          // devuelve el estado real y el cambio se deshace solo.
+          setProfileList((prev) => (prev ? { ...prev, activeProfileId: id } : prev));
           run(() => window.claudeMonitor.setActiveProfile(id));
         }}
         onAddAccount={async (name) => {
@@ -81,6 +94,7 @@ export default function App() {
           await run(() => window.claudeMonitor.loginProfile(created.data.id));
         }}
         onLogin={(id) => run(() => window.claudeMonitor.loginProfile(id))}
+        onNewSessionIn={(cwd) => run(() => window.claudeMonitor.newSession(cwd))}
         onDeleteProfile={(id) => {
           setSelectedSlug(null);
           run(() => window.claudeMonitor.deleteProfile(id));
@@ -88,14 +102,31 @@ export default function App() {
       />
       <main className="main">
         {error && <div className="error">{error}</div>}
+        {notice && <div className="notice">{notice}</div>}
         {loading ? (
           <p className="muted">Cargando…</p>
         ) : (
           <SessionList
             sessions={selectedSlug ? sessions.filter((s) => s.projectSlug === selectedSlug) : sessions}
+            emptyHint={emptyHint}
+            activeProfileName={activeProfile?.name ?? ''}
             canResume={Boolean(activeProfile?.authenticated)}
-            onResume={(id) => run(() => window.claudeMonitor.resumeSession(id))}
+            onResume={async (id) => {
+              setError('');
+              setNotice('');
+              const result = await window.claudeMonitor.resumeSession(id);
+              if (!result.ok) return setError(result.error);
+              // La terminal ya abrió; el aviso explica por qué el historial que
+              // se ve ahí puede arrancar por la mitad.
+              if (result.data.compactions > 0) {
+                setNotice(
+                  `Esta sesión fue compactada ${result.data.compactions} ${result.data.compactions === 1 ? 'vez' : 'veces'}. ` +
+                    'Claude Code reanuda desde el último resumen, así que en la terminal no vas a ver los mensajes anteriores a esa compactación: están resumidos, no perdidos.'
+                );
+              }
+            }}
             onDelete={(id) => run(() => window.claudeMonitor.deleteSession(id))}
+            onNewSession={() => run(() => window.claudeMonitor.newSession())}
           />
         )}
       </main>

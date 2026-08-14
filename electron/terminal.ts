@@ -17,6 +17,36 @@ function launch(command: string, args: string[], options: SpawnOptions): Promise
 }
 
 /**
+ * El entorno de la terminal nueva: el del sistema sin ninguna variable de
+ * Claude Code, más el CLAUDE_CONFIG_DIR de la cuenta.
+ *
+ * Si la app se abre desde adentro de una sesión de Claude Code hereda sus
+ * marcadores (CLAUDE_CODE_CHILD_SESSION, CLAUDECODE, CLAUDE_CODE_SESSION_ID…),
+ * y pasárselos a la terminal hace que el Claude de allá se crea un proceso
+ * hijo y APAGUE el guardado del transcript:
+ *
+ *   "Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker"
+ *
+ * La sesión funciona, pero no deja `.jsonl`. Y como la app lista transcripts,
+ * ese trabajo no aparece en ningún lado. Se borra todo lo que empiece con
+ * CLAUDE: la terminal que abrimos es una sesión nueva e independiente, no la
+ * hija de nadie.
+ */
+export function sessionEnv(base: NodeJS.ProcessEnv, configDir: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (!/^CLAUDE/i.test(key)) env[key] = value;
+  }
+  // Barras normales, a propósito. `wt.exe` reparsea su línea de comandos y se
+  // come las barras invertidas: "C:\\Users\\x\\perfil" llega como "C:Usersxperfil",
+  // que es una ruta relativa válida y distinta. Claude Code la crea vacía, no
+  // encuentra credenciales y pide login de nuevo — cada vez. Windows acepta las
+  // dos formas, y las barras normales sobreviven el reparseo intactas.
+  env.CLAUDE_CONFIG_DIR = configDir.split('\\').join('/');
+  return env;
+}
+
+/**
  * Abre una terminal externa en `cwd` ejecutando `command` con
  * CLAUDE_CONFIG_DIR apuntando al perfil activo. Prefiere Windows Terminal;
  * si no está instalado, usa PowerShell.
@@ -35,8 +65,7 @@ export async function openTerminal(cwd: string, command: string, configDir: stri
     throw new Error(`No se puede abrir la terminal: la carpeta ya no existe (${cwd}).`);
   }
 
-  const env = { ...process.env, CLAUDE_CONFIG_DIR: configDir };
-  const options: SpawnOptions = { cwd, env, detached: true, stdio: 'ignore' };
+  const options: SpawnOptions = { cwd, env: sessionEnv(process.env, configDir), detached: true, stdio: 'ignore' };
 
   // wt.exe reparsea su propia línea de comandos: trata ';' como separador de
   // subcomandos (cada uno puede nombrar un ejecutable) y hace su propio

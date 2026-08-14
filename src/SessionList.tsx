@@ -1,36 +1,29 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { SessionMeta } from '../shared/types';
+import { formatSize, relativeDate } from './format';
 
 type Props = {
   sessions: SessionMeta[];
+  /** Qué decir cuando no hay ninguna sesión en ninguna cuenta. */
+  emptyHint: string;
+  /** La cuenta activa: la que va a poner los tokens al reanudar, sea o no la
+   *  dueña de la sesión. */
+  activeProfileName: string;
   canResume: boolean;
   onResume: (id: string) => void;
   onDelete: (id: string) => void;
+  onNewSession: () => void;
 };
 
-const RELATIVE = new Intl.RelativeTimeFormat('es', { numeric: 'auto' });
-const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
-  ['year', 31536000000],
-  ['month', 2592000000],
-  ['day', 86400000],
-  ['hour', 3600000],
-  ['minute', 60000]
-];
-
-function relativeDate(mtime: number): string {
-  const diff = mtime - Date.now();
-  for (const [unit, ms] of UNITS) {
-    if (Math.abs(diff) >= ms) return RELATIVE.format(Math.round(diff / ms), unit);
-  }
-  return 'hace un momento';
-}
-
-/** Las sesiones recién creadas pesan menos de 1 KB: redondearlas a "0 KB" se lee como un error. */
-function formatSize(bytes: number): string {
-  return bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024)} KB`;
-}
-
-export default function SessionList({ sessions, canResume, onResume, onDelete }: Props) {
+export default function SessionList({
+  sessions,
+  emptyHint,
+  activeProfileName,
+  canResume,
+  onResume,
+  onDelete,
+  onNewSession
+}: Props) {
   const [query, setQuery] = useState('');
   const [confirmId, setConfirmId] = useState<string | null>(null);
 
@@ -49,14 +42,21 @@ export default function SessionList({ sessions, canResume, onResume, onDelete }:
 
   return (
     <>
-      <input
-        className="search"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Buscar por texto o ruta…"
-      />
+      <div className="toolbar">
+        <input
+          className="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Buscar por texto o ruta…"
+        />
+        <button className="primary" onClick={onNewSession}>
+          Nueva sesión…
+        </button>
+      </div>
 
-      {filtered.length === 0 && <p className="muted">No hay sesiones.</p>}
+      {filtered.length === 0 && (
+        <p className="muted">{sessions.length === 0 ? emptyHint : 'Ninguna sesión coincide con la búsqueda.'}</p>
+      )}
 
       {filtered.map((s) => (
         <article key={s.id} className="card">
@@ -70,7 +70,11 @@ export default function SessionList({ sessions, canResume, onResume, onDelete }:
           <div className="actions">
             <button
               disabled={!canResume}
-              title={canResume ? '' : 'La cuenta activa no tiene sesión iniciada'}
+              title={
+                canResume
+                  ? `Reanudar con la cuenta "${activeProfileName}"`
+                  : `La cuenta "${activeProfileName}" no tiene la sesión iniciada`
+              }
               onClick={() => onResume(s.id)}
             >
               Reanudar

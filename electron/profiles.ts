@@ -4,6 +4,9 @@ import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Profile, ProfileWithStatus } from '../shared/types';
+import { effectiveActiveId, visibleProfiles } from './profile-visibility';
+import { shareAll, shareProjects, unshareProjects } from './shared-projects';
+import { readUsage } from './usage';
 
 type Registry = { activeProfileId: string; profiles: Profile[] };
 
@@ -58,18 +61,41 @@ async function exists(path: string): Promise<boolean> {
 export async function listProfiles(): Promise<{ activeProfileId: string; profiles: ProfileWithStatus[] }> {
   const registry = await loadRegistry();
   const profiles = await Promise.all(
-    registry.profiles.map(async (p) => ({
+    visibleProfiles(registry.profiles).map(async (p) => ({
       ...p,
       exists: await exists(p.configDir),
-      authenticated: await isAuthenticated(p.configDir)
+      authenticated: await isAuthenticated(p.configDir),
+      usage: await readUsage(p.configDir)
     }))
   );
-  return { activeProfileId: registry.activeProfileId, profiles };
+  return { activeProfileId: effectiveActiveId(registry.profiles, registry.activeProfileId), profiles };
 }
 
 export async function getActiveProfile(): Promise<Profile> {
   const registry = await loadRegistry();
-  return registry.profiles.find((p) => p.id === registry.activeProfileId) ?? registry.profiles[0];
+  const id = effectiveActiveId(registry.profiles, registry.activeProfileId);
+  return registry.profiles.find((p) => p.id === id) ?? registry.profiles[0];
+}
+
+/** El pozo de sesiones vive en la cuenta principal: es el `~/.claude` real, el
+ *  que ya tiene todo el historial y el que usa el CLI cuando se lo abre a mano. */
+export async function getSharedRoot(): Promise<string> {
+  const registry = await loadRegistry();
+  return (registry.profiles.find((p) => p.id === 'default') ?? defaultProfile()).configDir;
+}
+
+/** Deja el `projects` de todas las cuentas apuntando al pozo. Se llama al
+ *  arrancar para arreglar las cuentas creadas antes de este cambio. */
+export async function shareAllProjects(): Promise<void> {
+  const registry = await loadRegistry();
+  await shareAll(registry.profiles, await getSharedRoot());
+}
+
+export async function getProfile(id: string): Promise<Profile> {
+  const registry = await loadRegistry();
+  const profile = registry.profiles.find((p) => p.id === id);
+  if (!profile) throw new Error(`Perfil desconocido: ${id}`);
+  return profile;
 }
 
 export async function createProfile(name: string): Promise<Profile> {
@@ -80,6 +106,7 @@ export async function createProfile(name: string): Promise<Profile> {
   const id = randomUUID().slice(0, 8);
   const profile: Profile = { id, name: trimmed, configDir: join(profilesRoot(), id), isDefault: false };
   await mkdir(profile.configDir, { recursive: true });
+  await shareProjects(profile.configDir, await getSharedRoot());
   registry.profiles.push(profile);
   await saveRegistry(registry);
   return profile;
@@ -103,6 +130,9 @@ export async function deleteProfile(id: string): Promise<void> {
     throw new Error('La cuenta principal no se puede eliminar');
   }
 
+  // Primero el junction, después la carpeta. Al revés, un `rm -rf` que siga el
+  // enlace se lleva puesto el pozo entero.
+  await unshareProjects(profile.configDir);
   await rm(profile.configDir, { recursive: true, force: true });
   registry.profiles = registry.profiles.filter((p) => p.id !== id);
   if (registry.activeProfileId === id) registry.activeProfileId = 'default';

@@ -6,6 +6,13 @@ import type { ParsedSession, SessionMeta } from '../shared/types';
 
 const PREVIEW_MAX = 140;
 
+/** El primer `type: "user"` de una sesión suele no ser algo que el usuario
+ *  escribió: los slash commands, el texto que Claude Code inyecta al reanudar
+ *  y los recordatorios del sistema viajan por el mismo canal. Usarlos de
+ *  preview llena la lista de "<command-message>…" y esconde de qué trata la
+ *  sesión, así que se saltean y se sigue buscando el primer mensaje real. */
+const NOT_A_PROMPT = /^(<(command-|local-command-|system-reminder|user-prompt-submit)|Caveat: The messages below)/;
+
 function extractText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
@@ -43,7 +50,7 @@ export function parseSessionLines(lines: Iterable<string>): ParsedSession | null
     if (!preview && entry.type === 'user') {
       const message = entry.message as { content?: unknown } | undefined;
       const text = extractText(message?.content).replace(/\s+/g, ' ').trim();
-      if (text) preview = text.slice(0, PREVIEW_MAX);
+      if (text && !NOT_A_PROMPT.test(text)) preview = text.slice(0, PREVIEW_MAX);
     }
 
     if (cwd && preview) break;
@@ -86,12 +93,14 @@ async function readSessionFile(filePath: string): Promise<ParsedSession | null> 
  * hace que cualquier cambio real (o su borrado, al desaparecer del
  * recorrido) sea imposible de perder.
  *
- * Se reconstruye por completo en cada `listSessions` a partir de lo que el
- * recorrido efectivamente vio, así que un archivo borrado o un cambio de
- * perfil no dejan entradas colgadas creciendo sin límite.
+ * Se poda por cuenta, no entera: `listSessions` corre una vez por perfil para
+ * armar la lista unificada, y vaciar el mapa en cada llamada dejaría cacheada
+ * sólo la última cuenta recorrida. Se borran nada más las entradas de ESTE
+ * configDir que el recorrido ya no vio (archivos borrados), así que tampoco
+ * quedan entradas colgadas creciendo sin límite.
  */
 type FileCacheEntry = { mtimeMs: number; size: number; meta: SessionMeta };
-let cache = new Map<string, FileCacheEntry>();
+const cache = new Map<string, FileCacheEntry>();
 
 export async function listSessions(configDir: string): Promise<SessionMeta[]> {
   const projectsDir = join(configDir, 'projects');
@@ -150,8 +159,37 @@ export async function listSessions(configDir: string): Promise<SessionMeta[]> {
   }
 
   sessions.sort((a, b) => b.mtime - a.mtime);
-  cache = nextCache;
+  for (const key of [...cache.keys()]) {
+    if (key.startsWith(projectsDir + sep) && !nextCache.has(key)) cache.delete(key);
+  }
+  for (const [key, entry] of nextCache) cache.set(key, entry);
   return sessions;
+}
+
+/**
+ * Cuenta las compactaciones del transcript. Claude Code marca cada una con una
+ * línea `subtype: "compact_boundary"`, y al reanudar arranca desde la última:
+ * todo lo anterior queda reemplazado por el resumen. Es la razón por la que
+ * una sesión reanudada "no carga completa", así que se avisa antes de abrirla.
+ *
+ * Lee el archivo entero (pueden ser 20 MB), por eso se llama sólo al reanudar
+ * una sesión concreta y nunca durante el listado.
+ */
+export async function countCompactions(filePath: string): Promise<number> {
+  const input = createReadStream(filePath, { encoding: 'utf8' });
+  const rl = createInterface({ input, crlfDelay: Infinity });
+  let count = 0;
+  try {
+    for await (const line of rl) {
+      if (line.includes('"compact_boundary"')) count += 1;
+    }
+  } catch {
+    return 0; // ilegible: no vale la pena romper el reanudar por el aviso
+  } finally {
+    rl.close();
+    input.destroy();
+  }
+  return count;
 }
 
 /**
@@ -163,25 +201,31 @@ function isStrictlyInside(parent: string, child: string): boolean {
   return child.startsWith(parent + sep);
 }
 
+/** Rutas de una sesión dentro de un configDir, ya contenidas. Lanza si el slug
+ *  o el id intentan salirse de `<configDir>/projects/`. */
+function sessionPaths(configDir: string, projectSlug: string, id: string) {
+  const projectsRoot = resolve(configDir, 'projects');
+  const projectDir = resolve(projectsRoot, basename(projectSlug));
+  const jsonl = resolve(projectDir, `${basename(id)}.jsonl`);
+  const sidecar = resolve(projectDir, basename(id));
+  if (!isStrictlyInside(projectsRoot, projectDir)) {
+    throw new Error('El proyecto está fuera del directorio de sesiones.');
+  }
+  if (!isStrictlyInside(projectDir, jsonl) || !isStrictlyInside(projectDir, sidecar)) {
+    throw new Error('El id de sesión es inválido.');
+  }
+  return { projectDir, jsonl, sidecar };
+}
+
 export async function deleteSession(configDir: string, projectSlug: string, id: string): Promise<void> {
   // basename() sigue siendo útil (evita separadores embebidos en el input),
   // pero NO es lo que impide escapar de <configDir>/projects/: basename('..')
   // devuelve '..' sin cambios, así que un projectSlug o id de '..' resuelve a
   // un directorio ancestro real. Lo que realmente contiene el borrado es la
-  // aserción de contención de abajo, que compara rutas ya resueltas contra
-  // sus raíces esperadas. No quitar esa aserción pensando que basename() ya
-  // alcanza.
-  const projectsRoot = resolve(configDir, 'projects');
-  const projectDir = resolve(projectsRoot, basename(projectSlug));
-  const jsonlPath = resolve(projectDir, `${basename(id)}.jsonl`);
-  const sidecarPath = resolve(projectDir, basename(id));
-
-  if (!isStrictlyInside(projectsRoot, projectDir)) {
-    throw new Error('No se puede borrar la sesión: el proyecto está fuera del directorio de sesiones.');
-  }
-  if (!isStrictlyInside(projectDir, jsonlPath) || !isStrictlyInside(projectDir, sidecarPath)) {
-    throw new Error('No se puede borrar la sesión: el id de sesión es inválido.');
-  }
+  // aserción de contención que hace `sessionPaths`, que compara rutas ya
+  // resueltas contra sus raíces esperadas. No quitarla pensando que
+  // basename() ya alcanza.
+  const { jsonl: jsonlPath, sidecar: sidecarPath } = sessionPaths(configDir, projectSlug, id);
 
   await rm(jsonlPath, { force: true });
   await rm(sidecarPath, { recursive: true, force: true });
