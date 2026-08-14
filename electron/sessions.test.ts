@@ -1,0 +1,222 @@
+// electron/sessions.test.ts
+import { describe, it, expect } from 'vitest';
+import { mkdtemp, mkdir, writeFile, appendFile, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parseSessionLines, listSessions, deleteSession } from './sessions';
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const OPERATION = JSON.stringify({ type: 'operation', op: 'compact' });
+const USER_LINE = JSON.stringify({
+  type: 'user',
+  sessionId: 'abc-123',
+  cwd: 'C:\\Users\\WPOSS\\proyecto',
+  gitBranch: 'master',
+  version: '2.0.0',
+  message: { role: 'user', content: 'arregla el login' }
+});
+
+describe('parseSessionLines', () => {
+  it('extrae metadatos saltando las líneas operation iniciales', () => {
+    expect(parseSessionLines([OPERATION, USER_LINE])).toEqual({
+      cwd: 'C:\\Users\\WPOSS\\proyecto',
+      gitBranch: 'master',
+      preview: 'arregla el login'
+    });
+  });
+
+  it('extrae el preview cuando el contenido es un array de bloques', () => {
+    const line = JSON.stringify({
+      type: 'user',
+      sessionId: 'def-456',
+      cwd: '/home/u/p',
+      message: { role: 'user', content: [{ type: 'text', text: 'hola\nmundo' }] }
+    });
+    const result = parseSessionLines([line]);
+    expect(result?.preview).toBe('hola mundo');
+    expect(result?.gitBranch).toBe('');
+  });
+
+  it('toma el cwd de la primera línea que lo trae aunque el preview venga después', () => {
+    const meta = JSON.stringify({ type: 'assistant', sessionId: 'ghi-789', cwd: '/w', gitBranch: 'dev' });
+    const user = JSON.stringify({ type: 'user', message: { role: 'user', content: 'segunda' } });
+    expect(parseSessionLines([meta, user])).toEqual({
+      cwd: '/w',
+      gitBranch: 'dev',
+      preview: 'segunda'
+    });
+  });
+
+  it('ignora los mensajes user que son resultados de herramienta', () => {
+    const toolResult = JSON.stringify({
+      type: 'user',
+      sessionId: 'jkl-000',
+      cwd: '/w',
+      message: { role: 'user', content: [{ type: 'tool_result', content: 'salida' }] }
+    });
+    const real = JSON.stringify({ type: 'user', message: { role: 'user', content: 'la pregunta' } });
+    expect(parseSessionLines([toolResult, real])?.preview).toBe('la pregunta');
+  });
+
+  it('devuelve null con archivo vacío', () => {
+    expect(parseSessionLines([])).toBeNull();
+  });
+
+  it('devuelve null y no lanza con JSON inválido', () => {
+    expect(parseSessionLines(['{roto', 'no json'])).toBeNull();
+  });
+
+  it('corta el preview a 140 caracteres', () => {
+    const line = JSON.stringify({
+      type: 'user',
+      sessionId: 'z',
+      cwd: '/w',
+      message: { role: 'user', content: 'x'.repeat(300) }
+    });
+    expect(parseSessionLines([line])!.preview).toHaveLength(140);
+  });
+
+  it('no lanza con bloque text faltante y usa preview del siguiente user', () => {
+    const malformed = JSON.stringify({
+      type: 'user',
+      sessionId: 'bad-1',
+      cwd: '/w',
+      message: { role: 'user', content: [{ type: 'text' }] }
+    });
+    const normal = JSON.stringify({ type: 'user', message: { role: 'user', content: 'preview válido' } });
+    expect(parseSessionLines([malformed, normal])?.preview).toBe('preview válido');
+  });
+});
+
+describe('listSessions cache', () => {
+  it('refleja el nuevo sizeBytes cuando un .jsonl existente crece (regresión: caché por mtime de directorio no lo detectaba)', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'claude-monitor-cache-test-'));
+    try {
+      const projectDir = join(tmp, 'projects', 'test-slug');
+      await mkdir(projectDir, { recursive: true });
+      const sessionFile = join(projectDir, 'session-1.jsonl');
+      const line = JSON.stringify({
+        type: 'user',
+        sessionId: 'session-1',
+        cwd: '/w',
+        message: { role: 'user', content: 'primera línea' }
+      });
+      await writeFile(sessionFile, line + '\n');
+
+      const first = await listSessions(tmp);
+      const before = first.find((s) => s.id === 'session-1')!.sizeBytes;
+
+      await appendFile(sessionFile, line + '\n');
+
+      const second = await listSessions(tmp);
+      const after = second.find((s) => s.id === 'session-1')!.sizeBytes;
+
+      expect(after).toBeGreaterThan(before);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('deleteSession path traversal', () => {
+  async function makeFixture() {
+    const tmp = await mkdtemp(join(tmpdir(), 'claude-monitor-delete-test-'));
+    const projectDir = join(tmp, 'projects', 'real-slug');
+    await mkdir(projectDir, { recursive: true });
+    const sessionFile = join(projectDir, 'real-id.jsonl');
+    await writeFile(sessionFile, 'contenido de la sesión\n');
+    return { tmp, sessionFile };
+  }
+
+  it('rechaza id ".." y deja projects/ intacto (basename(\'..\') === \'..\', no lo neutraliza)', async () => {
+    const { tmp, sessionFile } = await makeFixture();
+    try {
+      await expect(deleteSession(tmp, 'real-slug', '..')).rejects.toThrow();
+      expect(await exists(join(tmp, 'projects'))).toBe(true);
+      expect(await exists(sessionFile)).toBe(true);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('rechaza projectSlug ".." + id ".." y deja el perfil intacto (escaparía hasta el padre de configDir)', async () => {
+    const { tmp } = await makeFixture();
+    try {
+      await expect(deleteSession(tmp, '..', '..')).rejects.toThrow();
+      expect(await exists(tmp)).toBe(true);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('borra la sesión legítima cuando projectSlug e id son válidos', async () => {
+    const { tmp, sessionFile } = await makeFixture();
+    try {
+      await deleteSession(tmp, 'real-slug', 'real-id');
+      expect(await exists(sessionFile)).toBe(false);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('identidad de la sesión: el archivo, no el sessionId de adentro', () => {
+  // Caso real: al reanudar/forkear una sesión, Claude Code escribe un .jsonl nuevo
+  // cuyas primeras líneas todavía llevan el sessionId de la sesión padre. Si la
+  // identidad saliera del contenido, las dos sesiones compartirían id y borrar el
+  // fork borraría el archivo del padre.
+  async function makeForkFixture() {
+    const tmp = await mkdtemp(join(tmpdir(), 'cm-fork-'));
+    const projectDir = join(tmp, 'projects', 'proyecto');
+    await mkdir(projectDir, { recursive: true });
+
+    const padre = join(projectDir, 'aaaaaaaa-0000-4000-8000-000000000001.jsonl');
+    const fork = join(projectDir, 'bbbbbbbb-0000-4000-8000-000000000002.jsonl');
+
+    await writeFile(
+      padre,
+      JSON.stringify({ type: 'user', sessionId: 'aaaaaaaa-0000-4000-8000-000000000001', cwd: 'C:\proyecto', message: { role: 'user', content: 'sesion padre' } }) + '\n'
+    );
+    // El fork hereda el sessionId del padre en su primera línea con cwd.
+    await writeFile(
+      fork,
+      JSON.stringify({ type: 'user', sessionId: 'aaaaaaaa-0000-4000-8000-000000000001', cwd: 'C:\proyecto', message: { role: 'user', content: 'sesion forkeada' } }) + '\n'
+    );
+
+    return { tmp, padre, fork };
+  }
+
+  it('da a cada archivo su propio id aunque compartan el sessionId interno', async () => {
+    const { tmp } = await makeForkFixture();
+    try {
+      const ids = (await listSessions(tmp)).map((s) => s.id).sort();
+      expect(ids).toEqual([
+        'aaaaaaaa-0000-4000-8000-000000000001',
+        'bbbbbbbb-0000-4000-8000-000000000002'
+      ]);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('borrar el fork deja intacto el archivo del padre', async () => {
+    const { tmp, padre, fork } = await makeForkFixture();
+    try {
+      const sessions = await listSessions(tmp);
+      const meta = sessions.find((s) => s.preview === 'sesion forkeada')!;
+      await deleteSession(tmp, meta.projectSlug, meta.id);
+      expect(await exists(fork)).toBe(false);
+      expect(await exists(padre)).toBe(true);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+});

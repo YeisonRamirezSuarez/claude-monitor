@@ -1,0 +1,29 @@
+:root { color-scheme: dark; }
+body { margin: 0; font: 14px system-ui, sans-serif; background: #1a1a1a; color: #e8e8e8; }
+.layout { display: grid; grid-template-columns: 280px 1fr; height: 100vh; }
+.sidebar { overflow-y: auto; padding: 12px; background: #141414; border-right: 1px solid #2a2a2a; }
+.sidebar h2 { font-size: 12px; text-transform: uppercase; color: #888; margin: 16px 0 8px; }
+.sidebar ul { list-style: none; margin: 0; padding: 0; }
+.sidebar li { display: flex; align-items: center; gap: 6px; border-radius: 6px; padding: 2px 4px; }
+.sidebar li.active { background: #2a2a2a; }
+.sidebar li > button:first-child { flex: 1; text-align: left; }
+button { background: none; border: none; color: inherit; font: inherit; cursor: pointer; padding: 6px; }
+button.link { color: #7aa2f7; font-size: 12px; }
+button.danger, .danger { color: #f7768e; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.dot.ok { background: #9ece6a; }
+.dot.off { background: #666; }
+.add-account { display: flex; gap: 4px; margin-top: 8px; }
+.add-account input { flex: 1; min-width: 0; background: #1f1f1f; border: 1px solid #333; color: inherit; border-radius: 4px; padding: 6px; }
+.confirm { background: #1f1f1f; border: 1px solid #333; border-radius: 6px; padding: 8px; margin-top: 8px; font-size: 13px; }
+.main { overflow-y: auto; padding: 16px; }
+.error { background: #3a1d24; border: 1px solid #f7768e; border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; }
+.muted { color: #888; }
+.search { width: 100%; box-sizing: border-box; margin-bottom: 12px; padding: 8px; background: #1f1f1f; border: 1px solid #333; border-radius: 6px; color: inherit; }
+.card { background: #1f1f1f; border: 1px solid #2a2a2a; border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+.card .preview { margin: 0 0 6px; }
+.card .meta { display: flex; flex-wrap: wrap; gap: 12px; margin: 0 0 8px; font-size: 12px; color: #888; }
+.card .branch { color: #9ece6a; }
+.card .actions { display: flex; gap: 8px; }
+.card .actions button { border: 1px solid #333; border-radius: 6px; padding: 6px 12px; }
+.card .actions button:disabled { opacity: 0.4; cursor: not-allowed; }
