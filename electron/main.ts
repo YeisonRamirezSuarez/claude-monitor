@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
 import { join } from 'node:path';
 import {
   createProfile,
@@ -96,6 +96,7 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
+    icon: join(import.meta.dirname, '../../build/icon.png'),
     webPreferences: {
       preload: join(import.meta.dirname, '../preload/preload.cjs'),
       contextIsolation: true,
@@ -111,6 +112,10 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  // La app no tiene nada que ofrecer en un menú: ni archivos que abrir, ni
+  // edición, ni ventanas. La barra de File/Edit/View/Window/Help es la que
+  // Electron pone por defecto, y sólo ocupa lugar.
+  Menu.setApplicationMenu(null);
   // Arregla las cuentas creadas antes de que las sesiones fueran compartidas.
   await shareAllProjects().catch(() => {});
   registerHandlers();
