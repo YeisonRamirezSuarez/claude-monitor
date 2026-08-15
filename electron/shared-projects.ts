@@ -58,14 +58,23 @@ export async function shareProjects(configDir: string, sharedRoot: string): Prom
   await symlink(target, link, 'junction');
 }
 
-/** Quita el junction sin tocar el pozo. `rmdir` sobre un junction borra el
- *  enlace y nada más; un `rm -rf` sobre la carpeta de la cuenta sin hacer esto
- *  primero es la diferencia entre quitar una cuenta y borrar todas las
- *  sesiones de todas. */
-export async function unshareProjects(configDir: string): Promise<void> {
-  const link = join(configDir, 'projects');
-  const current = await lstat(link).catch(() => null);
-  if (current?.isSymbolicLink()) await rmdir(link).catch(() => {});
+/**
+ * Corta TODOS los enlaces de una cuenta, sin tocar lo que apuntan.
+ *
+ * `rmdir` sobre un junction borra el enlace y nada más; un `rm -rf` sobre la
+ * carpeta de la cuenta sin hacer esto primero es la diferencia entre quitar una
+ * cuenta y borrar el pozo entero.
+ *
+ * Barre el directorio en vez de mirar una lista de nombres a propósito: la
+ * cuenta comparte `projects` y `plugins`, y el día que se comparta algo más,
+ * olvidarse de agregarlo acá sería catastrófico y silencioso.
+ */
+export async function unlinkShared(configDir: string): Promise<void> {
+  for (const entry of await readdir(configDir).catch(() => [])) {
+    const path = join(configDir, entry);
+    const current = await lstat(path).catch(() => null);
+    if (current?.isSymbolicLink()) await rmdir(path).catch(() => {});
+  }
 }
 
 export async function shareAll(profiles: Profile[], sharedRoot: string): Promise<void> {
