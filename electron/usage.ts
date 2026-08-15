@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AccountUsage, UsageLimit } from '../shared/types';
+import { canCallApi } from './credentials';
 
 /** Los mismos endpoints que usa el CLI: consumo y dueño del token. */
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
@@ -68,8 +69,12 @@ async function fetchLive(configDir: string): Promise<Live | null> {
   if (cached && Date.now() - cached.at < LIVE_TTL_MS) return cached;
 
   const credentials = await readJson(join(configDir, '.credentials.json'));
-  const token = (credentials?.claudeAiOauth as { accessToken?: unknown } | undefined)?.accessToken;
-  if (typeof token !== 'string' || !token) return null;
+  // Un token de acceso vencido devuelve 401. La cuenta sigue logueada —el CLI
+  // lo renueva solo, ver `credentials.ts`— pero hasta que eso pase el consumo
+  // sale de la caché. Se chequea antes para no gastar un timeout por cuenta en
+  // cada refresco pidiendo algo que ya se sabe que va a fallar.
+  if (!canCallApi(credentials)) return null;
+  const token = (credentials?.claudeAiOauth as { accessToken?: unknown } | undefined)?.accessToken as string;
 
   const get = async (url: string) => {
     const res = await fetch(url, {
