@@ -12,6 +12,7 @@ type Props = {
   canResume: boolean;
   onResume: (id: string) => void;
   onDelete: (id: string) => void;
+  onOpen: (id: string) => void;
   onNewSession: () => void;
 };
 
@@ -22,6 +23,7 @@ export default function SessionList({
   canResume,
   onResume,
   onDelete,
+  onOpen,
   onNewSession
 }: Props) {
   const [query, setQuery] = useState('');
@@ -79,6 +81,7 @@ export default function SessionList({
             >
               Reanudar
             </button>
+            <button onClick={() => onOpen(s.id)}>Ver conversación</button>
             <button className="danger" onClick={() => setConfirmId(s.id)}>
               Borrar
             </button>
