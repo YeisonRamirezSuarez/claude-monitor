@@ -85,9 +85,37 @@ function png(size) {
   ]);
 }
 
-const here = dirname(fileURLToPath(import.meta.url));
-for (const size of [256, 512]) {
-  const file = join(here, size === 256 ? 'icon.png' : `icon-${size}.png`);
-  writeFileSync(file, png(size));
-  console.log(file, size + 'x' + size);
+/**
+ * ICO con cada tamaño guardado como PNG, que es lo que Windows espera desde
+ * Vista. El instalador y el ejecutable usan este archivo; el 256 es el que
+ * exige electron-builder y los chicos evitan que Windows reescale el grande
+ * para la barra de tareas, que es donde el pixel art se ensucia.
+ */
+function ico(sizes) {
+  const images = sizes.map((size) => ({ size, data: png(size) }));
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(1, 2); // tipo: icono
+  header.writeUInt16LE(images.length, 4);
+
+  let offset = 6 + images.length * 16;
+  const entries = images.map(({ size, data }) => {
+    const e = Buffer.alloc(16);
+    e[0] = size >= 256 ? 0 : size; // 0 significa 256
+    e[1] = size >= 256 ? 0 : size;
+    e.writeUInt16LE(1, 4); // planos
+    e.writeUInt16LE(32, 6); // bits por pixel
+    e.writeUInt32BE(0, 8);
+    e.writeUInt32LE(data.length, 8);
+    e.writeUInt32LE(offset, 12);
+    offset += data.length;
+    return e;
+  });
+
+  return Buffer.concat([header, ...entries, ...images.map((i) => i.data)]);
 }
+
+const here = dirname(fileURLToPath(import.meta.url));
+writeFileSync(join(here, 'icon.png'), png(256));
+writeFileSync(join(here, 'icon-512.png'), png(512));
+writeFileSync(join(here, 'icon.ico'), ico([16, 32, 48, 64, 128, 256]));
+console.log('icon.png 256, icon-512.png 512, icon.ico (16-256)');
