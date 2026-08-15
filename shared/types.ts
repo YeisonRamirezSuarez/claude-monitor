@@ -35,6 +35,8 @@ export type ProfileWithStatus = Profile & {
   exists: boolean;
   /** Hay `.credentials.json` válido y no vencido. */
   authenticated: boolean;
+  /** Qué le falta al Chrome de esta cuenta para que ande la extensión. */
+  chrome: ChromeStatus;
   /** Consumo cacheado por el CLI. null si la cuenta nunca se usó. */
   usage: AccountUsage | null;
 };
@@ -57,7 +59,26 @@ export type SessionMeta = ParsedSession & {
   sizeBytes: number;
 };
 
+export type ChromeStatus = { profileExists: boolean; extension: boolean; loggedIn: boolean };
+
 export type ResumeResult = { compactions: number };
+
+/** Un turno de la conversación, ya sin la maquinaria de herramientas. */
+export type TranscriptMessage = {
+  role: 'user' | 'assistant';
+  text: string;
+  /** Cuántas herramientas usó el asistente en ese turno. Un turno que sólo
+   *  ejecutó comandos no tiene texto, y sin esto se vería como un hueco. */
+  tools: number;
+  timestamp: string;
+};
+
+export type Transcript = {
+  cwd: string;
+  messages: TranscriptMessage[];
+  /** Se corto por el tope de mensajes. */
+  truncated: boolean;
+};
 
 export type ProfileList = { activeProfileId: string; profiles: ProfileWithStatus[] };
 
@@ -66,7 +87,13 @@ export type ClaudeMonitorApi = {
   createProfile: (name: string) => Promise<Result<Profile>>;
   setActiveProfile: (id: string) => Promise<Result<null>>;
   deleteProfile: (id: string) => Promise<Result<null>>;
-  loginProfile: (id: string) => Promise<Result<null>>;
+  /** Arranca el login de una cuenta y abre la autorización en el Chrome de esa
+   *  misma cuenta, no en el navegador por defecto. Devuelve la URL abierta;
+   *  después hay que mandar el código con `submitLoginCode`. */
+  loginProfile: (id: string) => Promise<Result<LoginStart>>;
+  /** El código que el usuario copia del navegador para terminar el login. */
+  submitLoginCode: (id: string, code: string) => Promise<Result<null>>;
+  cancelLogin: (id: string) => Promise<Result<null>>;
   /** Las sesiones del pozo compartido, ordenadas por fecha. */
   listSessions: () => Promise<Result<SessionMeta[]>>;
   /** Reanuda con la cuenta ACTIVA: es la que consume los tokens. Devuelve
@@ -77,7 +104,18 @@ export type ClaudeMonitorApi = {
    *  Sin `cwd` pide la carpeta con el selector nativo. */
   newSession: (cwd?: string) => Promise<Result<null>>;
   deleteSession: (id: string) => Promise<Result<null>>;
+  /** La conversación completa de una sesión, leída del `.jsonl`. */
+  readTranscript: (id: string) => Promise<Result<Transcript>>;
+  /** Abre Chrome con el perfil de esta cuenta, que es lo que necesita la
+   *  extensión: se autentica con la sesión web de claude.ai del navegador, no
+   *  con el token del CLI. `firstRun` avisa que el perfil se acaba de crear y
+   *  hay que iniciar sesión e instalar la extensión ahí. */
+  openChrome: (id: string) => Promise<Result<ChromeOpenResult>>;
 };
+
+export type LoginStart = { url: string; needsExtension: boolean };
+
+export type ChromeOpenResult = { firstRun: boolean; needsExtension: boolean; pendingRename: boolean };
 
 declare global {
   interface Window {

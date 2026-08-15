@@ -51,6 +51,7 @@ type Props = {
   onSelectProfile: (id: string) => void;
   onAddAccount: (name: string) => void;
   onLogin: (id: string) => void;
+  onOpenChrome: (id: string) => void;
   onNewSessionIn: (cwd: string) => void;
   onDeleteProfile: (id: string) => void;
 };
@@ -67,15 +68,26 @@ function ProfileBlock({
   profile,
   isActive,
   onLogin,
+  onOpenChrome,
   onRemove,
   onSelect
 }: {
   profile: ProfileWithStatus;
   isActive: boolean;
   onLogin: (id: string) => void;
+  onOpenChrome: (id: string) => void;
   onRemove: (id: string) => void;
   onSelect: (id: string) => void;
 }) {
+  // Qué le falta al Chrome de esta cuenta. Sin esto sólo se descubre fallando:
+  // se abre el navegador, la extensión dice "not connected", y no hay forma de
+  // saber si lo que falta es la extensión o el login.
+  const falta = [
+    !profile.chrome.loggedIn && 'iniciar sesión en claude.ai',
+    !profile.chrome.extension && 'instalar la extensión'
+  ].filter((f): f is string => Boolean(f));
+  const listo = falta.length === 0;
+
   return (
     <li className={`profile${isActive ? ' active' : ''}`}>
       <div className="profile-row">
@@ -99,12 +111,26 @@ function ProfileBlock({
             Iniciar sesión
           </button>
         )}
+        <button
+          className={`link${listo ? '' : ' pendiente'}`}
+          title={
+            listo
+              ? `Abrir el Chrome de "${profile.name}". Ya tiene la extensión y la sesión de claude.ai.`
+              : `Abrir el Chrome de "${profile.name}". Falta: ${falta.join(' y ')}.`
+          }
+          onClick={() => onOpenChrome(profile.id)}
+        >
+          Chrome{listo ? ' ✓' : ' !'}
+        </button>
         {!profile.isDefault && (
           <button className="link danger" onClick={() => onRemove(profile.id)}>
             Quitar
           </button>
         )}
       </div>
+      {!listo && profile.authenticated && (
+        <p className="chrome-falta">Para la extensión falta: {falta.join(' y ')}. Tocá “Chrome”.</p>
+      )}
       <Usage usage={profile.usage} />
     </li>
   );
@@ -143,6 +169,7 @@ export default function Sidebar(props: Props) {
             profile={active}
             isActive
             onLogin={props.onLogin}
+            onOpenChrome={props.onOpenChrome}
             onRemove={setConfirmDelete}
             onSelect={props.onSelectProfile}
           />
@@ -161,6 +188,7 @@ export default function Sidebar(props: Props) {
                 profile={p}
                 isActive={false}
                 onLogin={props.onLogin}
+                onOpenChrome={props.onOpenChrome}
                 onRemove={setConfirmDelete}
                 onSelect={props.onSelectProfile}
               />

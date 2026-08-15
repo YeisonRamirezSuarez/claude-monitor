@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Sidebar from './Sidebar';
+import TranscriptView from './Transcript';
 import SessionList from './SessionList';
 import type { ProfileList, Result, SessionMeta } from '../shared/types';
 
@@ -16,7 +17,11 @@ export default function App() {
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [openId, setOpenId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // El login en curso: el CLI ya abrió la autorización y espera el código.
+  const [pendingLogin, setPendingLogin] = useState<{ id: string; needsExtension: boolean } | null>(null);
+  const [loginCode, setLoginCode] = useState('');
 
   // Dos refresh pueden estar en vuelo a la vez (una acción y el listener de
   // focus, o dos clics rápidos). Sólo el último iniciado puede escribir estado:
@@ -58,6 +63,82 @@ export default function App() {
   const emptyHint =
     'Todavía no hay sesiones. Creá la primera con "Nueva sesión…": se abre con la cuenta marcada arriba.';
 
+  // Reanudar es el mismo camino desde la tarjeta y desde el visor: abre la
+  // terminal con la cuenta activa y avisa si la sesión viene compactada.
+  const resume = async (id: string) => {
+    setError('');
+    setNotice('');
+    const result = await window.claudeMonitor.resumeSession(id);
+    if (!result.ok) return setError(result.error);
+    if (result.data.compactions > 0) {
+      setNotice(
+        `Esta sesión fue compactada ${result.data.compactions} ${result.data.compactions === 1 ? 'vez' : 'veces'}. ` +
+          'Claude Code reanuda desde el último resumen, así que en la terminal no vas a ver los mensajes anteriores a esa compactación: están resumidos, no perdidos.'
+      );
+    }
+  };
+
+  // Abre el Chrome de una cuenta, siempre en claude.ai. Hay dos pasos que la
+  // app no puede hacer por el usuario —iniciar sesión con esa cuenta e instalar
+  // la extensión en ese perfil— y se explican cuando el perfil es nuevo. El
+  // aviso no puede ser la única señal: que el perfil ya exista no significa que
+  // esté logueado, así que la página abre igual y ahí se ve.
+  const openChrome = async (id: string) => {
+    setError('');
+    setNotice('');
+    const result = await window.claudeMonitor.openChrome(id);
+    if (!result.ok) return setError(result.error);
+    setNotice(
+      result.data.needsExtension
+        ? 'Se abrió el Chrome de esta cuenta en la tienda: instalá ahí la extensión de Claude. Las extensiones son por ' +
+            'perfil, así que va una vez por cada cuenta — sin ella, la sesión dice "browser extension is not connected".'
+        : 'Chrome se abrió con el perfil de esta cuenta, en claude.ai. Fijate qué cuenta aparece logueada: ' +
+            'la extensión sólo conecta si es la misma con la que abrís la sesión.'
+    );
+  };
+
+  // El login de una cuenta, conducido desde acá.
+  //
+  // La autorización se abre en el Chrome de ESA cuenta, no en el navegador por
+  // defecto: así el mismo recorrido deja el token del CLI y la sesión de
+  // claude.ai que necesita la extensión. El CLI queda esperando el código que
+  // el usuario copia del navegador, y se lo manda `sendCode`.
+  const startLogin = async (id: string) => {
+    setError('');
+    setNotice('');
+    setLoginCode('');
+    const result = await window.claudeMonitor.loginProfile(id);
+    if (!result.ok) return setError(result.error);
+    setPendingLogin({ id, needsExtension: result.data.needsExtension });
+  };
+
+  const sendCode = async () => {
+    if (!pendingLogin || !loginCode.trim()) return;
+    setError('');
+    const id = pendingLogin.id;
+    const result = await window.claudeMonitor.submitLoginCode(id, loginCode);
+    if (!result.ok) return setError(result.error);
+    setPendingLogin(null);
+    setLoginCode('');
+    // El paso siguiente recién ahora: instalar la extensión antes de tener la
+    // sesión no sirve de nada, y abrir las dos pestañas juntas encimaba todo.
+    if (pendingLogin.needsExtension) {
+      await window.claudeMonitor.openChrome(id);
+      setNotice(
+        'Cuenta conectada. Se abrió la tienda en ese mismo Chrome: instalá ahí la extensión de Claude y ya queda todo listo.'
+      );
+    } else {
+      setNotice('Cuenta conectada. Ese Chrome ya tiene la sesión y la extensión: la herramienta de navegador debería andar.');
+    }
+    await refresh();
+  };
+
+  const cancelLogin = async () => {
+    if (pendingLogin) await window.claudeMonitor.cancelLogin(pendingLogin.id);
+    setPendingLogin(null);
+    setLoginCode('');
+  };
+
   const run = async (action: () => Promise<Result<unknown>>) => {
     setError('');
     setNotice('');
@@ -91,9 +172,13 @@ export default function App() {
           setError('');
           const created = await window.claudeMonitor.createProfile(name);
           if (!created.ok) return setError(created.error);
-          await run(() => window.claudeMonitor.loginProfile(created.data.id));
+          await refresh();
+          // Agregar la cuenta y conectarla es un solo recorrido: se crea y se
+          // arranca el login enseguida, en el Chrome de esa cuenta.
+          await startLogin(created.data.id);
         }}
-        onLogin={(id) => run(() => window.claudeMonitor.loginProfile(id))}
+        onLogin={(id) => startLogin(id)}
+        onOpenChrome={(id) => openChrome(id)}
         onNewSessionIn={(cwd) => run(() => window.claudeMonitor.newSession(cwd))}
         onDeleteProfile={(id) => {
           setSelectedSlug(null);
@@ -103,6 +188,35 @@ export default function App() {
       <main className="main">
         {error && <div className="error">{error}</div>}
         {notice && <div className="notice">{notice}</div>}
+        {pendingLogin && (
+          <form
+            className="notice login-code"
+            onSubmit={(e) => {
+              e.preventDefault();
+              sendCode();
+            }}
+          >
+            <p>
+              <strong>Autorizá en la ventana de Chrome que se abrió</strong> — es la de esta cuenta, no el Chrome
+              normal. Cuando termines te va a dar un código: pegalo acá.
+              {pendingLogin.needsExtension && ' Después de esto se abre la tienda para instalar la extensión.'}
+            </p>
+            <div className="login-code-row">
+              <input
+                autoFocus
+                value={loginCode}
+                onChange={(e) => setLoginCode(e.target.value)}
+                placeholder="Pegá el código acá"
+              />
+              <button className="primary" type="submit" disabled={!loginCode.trim()}>
+                Conectar
+              </button>
+              <button type="button" onClick={cancelLogin}>
+                Cancelar
+              </button>
+            </div>
+          </form>
+        )}
         {loading ? (
           <p className="muted">Cargando…</p>
         ) : (
@@ -111,25 +225,22 @@ export default function App() {
             emptyHint={emptyHint}
             activeProfileName={activeProfile?.name ?? ''}
             canResume={Boolean(activeProfile?.authenticated)}
-            onResume={async (id) => {
-              setError('');
-              setNotice('');
-              const result = await window.claudeMonitor.resumeSession(id);
-              if (!result.ok) return setError(result.error);
-              // La terminal ya abrió; el aviso explica por qué el historial que
-              // se ve ahí puede arrancar por la mitad.
-              if (result.data.compactions > 0) {
-                setNotice(
-                  `Esta sesión fue compactada ${result.data.compactions} ${result.data.compactions === 1 ? 'vez' : 'veces'}. ` +
-                    'Claude Code reanuda desde el último resumen, así que en la terminal no vas a ver los mensajes anteriores a esa compactación: están resumidos, no perdidos.'
-                );
-              }
-            }}
+            onResume={resume}
             onDelete={(id) => run(() => window.claudeMonitor.deleteSession(id))}
+            onOpen={setOpenId}
             onNewSession={() => run(() => window.claudeMonitor.newSession())}
           />
         )}
       </main>
+      {openId && (
+        <TranscriptView
+          sessionId={openId}
+          activeProfileName={activeProfile?.name ?? ''}
+          canResume={Boolean(activeProfile?.authenticated)}
+          onResume={() => resume(openId)}
+          onClose={() => setOpenId(null)}
+        />
+      )}
     </div>
   );
 }

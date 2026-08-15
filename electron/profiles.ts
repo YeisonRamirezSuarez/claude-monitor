@@ -4,8 +4,12 @@ import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Profile, ProfileWithStatus } from '../shared/types';
+import { ensureAll, ensureHostScript } from './chrome-host';
+import { chromeStatus } from './chrome-launch';
+import { isLoggedIn } from './credentials';
+import { syncAll, syncPlugins } from './plugins';
 import { effectiveActiveId, visibleProfiles } from './profile-visibility';
-import { shareAll, shareProjects, unshareProjects } from './shared-projects';
+import { shareAll, shareProjects, unlinkShared } from './shared-projects';
 import { readUsage } from './usage';
 
 type Registry = { activeProfileId: string; profiles: Profile[] };
@@ -42,8 +46,7 @@ async function loadRegistry(): Promise<Registry> {
 async function isAuthenticated(configDir: string): Promise<boolean> {
   try {
     const raw = await readFile(join(configDir, '.credentials.json'), 'utf8');
-    const expiresAt = JSON.parse(raw)?.claudeAiOauth?.expiresAt;
-    return typeof expiresAt === 'number' && expiresAt > Date.now();
+    return isLoggedIn(JSON.parse(raw));
   } catch {
     return false;
   }
@@ -65,6 +68,7 @@ export async function listProfiles(): Promise<{ activeProfileId: string; profile
       ...p,
       exists: await exists(p.configDir),
       authenticated: await isAuthenticated(p.configDir),
+      chrome: await chromeStatus(p.id),
       usage: await readUsage(p.configDir)
     }))
   );
@@ -91,6 +95,21 @@ export async function shareAllProjects(): Promise<void> {
   await shareAll(registry.profiles, await getSharedRoot());
 }
 
+/** Deja a todas las cuentas con los plugins del pozo. Se llama al arrancar
+ *  porque el pozo es lo que el usuario configura a mano: si habilita un plugin
+ *  ahí, la próxima sesión de cualquier cuenta ya lo tiene. */
+export async function syncAllPlugins(): Promise<void> {
+  const registry = await loadRegistry();
+  await syncAll(registry.profiles, await getSharedRoot());
+}
+
+/** Deja el puente de Chrome de cada cuenta apuntando a su propia carpeta, para
+ *  que emparejar la extensión sea una vez por cuenta y no una por sesión. */
+export async function ensureChromeHosts(): Promise<void> {
+  const registry = await loadRegistry();
+  await ensureAll(registry.profiles, await getSharedRoot());
+}
+
 export async function getProfile(id: string): Promise<Profile> {
   const registry = await loadRegistry();
   const profile = registry.profiles.find((p) => p.id === id);
@@ -106,7 +125,14 @@ export async function createProfile(name: string): Promise<Profile> {
   const id = randomUUID().slice(0, 8);
   const profile: Profile = { id, name: trimmed, configDir: join(profilesRoot(), id), isDefault: false };
   await mkdir(profile.configDir, { recursive: true });
-  await shareProjects(profile.configDir, await getSharedRoot());
+  const sharedRoot = await getSharedRoot();
+  await shareProjects(profile.configDir, sharedRoot);
+  // Una cuenta recién creada tiene que nacer con los mismos plugins que el
+  // resto: si no, su primera sesión sale pelada.
+  await syncPlugins(profile.configDir, sharedRoot);
+  // Y con su puente de Chrome ya apuntado, para no arrancar emparejando contra
+  // la carpeta de otra cuenta.
+  await ensureHostScript(profile.configDir, sharedRoot).catch(() => {});
   registry.profiles.push(profile);
   await saveRegistry(registry);
   return profile;
@@ -132,7 +158,7 @@ export async function deleteProfile(id: string): Promise<void> {
 
   // Primero el junction, después la carpeta. Al revés, un `rm -rf` que siga el
   // enlace se lleva puesto el pozo entero.
-  await unshareProjects(profile.configDir);
+  await unlinkShared(profile.configDir);
   await rm(profile.configDir, { recursive: true, force: true });
   registry.profiles = registry.profiles.filter((p) => p.id !== id);
   if (registry.activeProfileId === id) registry.activeProfileId = 'default';

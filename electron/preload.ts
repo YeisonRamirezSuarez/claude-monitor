@@ -7,10 +7,14 @@ const api: ClaudeMonitorApi = {
   setActiveProfile: (id) => ipcRenderer.invoke('profiles:setActive', id),
   deleteProfile: (id) => ipcRenderer.invoke('profiles:delete', id),
   loginProfile: (id) => ipcRenderer.invoke('profiles:login', id),
+  submitLoginCode: (id, code) => ipcRenderer.invoke('profiles:loginCode', id, code),
+  cancelLogin: (id) => ipcRenderer.invoke('profiles:loginCancel', id),
   listSessions: () => ipcRenderer.invoke('sessions:list'),
   resumeSession: (id) => ipcRenderer.invoke('sessions:resume', id),
   newSession: (cwd) => ipcRenderer.invoke('sessions:new', cwd),
-  deleteSession: (id) => ipcRenderer.invoke('sessions:delete', id)
+  deleteSession: (id) => ipcRenderer.invoke('sessions:delete', id),
+  readTranscript: (id) => ipcRenderer.invoke('sessions:transcript', id),
+  openChrome: (id) => ipcRenderer.invoke('chrome:open', id)
 };
 
 contextBridge.exposeInMainWorld('claudeMonitor', api);

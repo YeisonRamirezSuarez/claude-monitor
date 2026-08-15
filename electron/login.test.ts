@@ -1,0 +1,39 @@
+// electron/login.test.ts
+import { describe, it, expect } from 'vitest';
+import { looksSuccessful, parseAuthUrl } from './login';
+
+const URL =
+  'https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a&response_type=code&' +
+  'redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&state=81eQmg';
+
+describe('parseAuthUrl', () => {
+  it('saca la URL de lo que imprime el CLI', () => {
+    const salida = `Opening browser to sign in…\nIf the browser didn't open, visit: ${URL}\n`;
+    expect(parseAuthUrl(salida)).toBe(URL);
+  });
+
+  it('no la devuelve duplicada cuando viene como hipervínculo de terminal', () => {
+    // Formato real: la secuencia OSC 8 pone la dirección dos veces seguidas.
+    const salida = `visit: ]8;;${URL}\\${URL}]8;;\\\n`;
+    expect(parseAuthUrl(salida)).toBe(URL);
+  });
+
+  it('aguanta que la salida llegue cortada, que es como llega por stdout', () => {
+    expect(parseAuthUrl('Opening browser to sign i')).toBeNull();
+    expect(parseAuthUrl('')).toBeNull();
+  });
+
+  it('ignora los colores de la terminal', () => {
+    expect(parseAuthUrl(`[32mvisit:[0m ${URL}`)).toBe(URL);
+  });
+});
+
+describe('looksSuccessful', () => {
+  it('reconoce que entró', () => {
+    expect(looksSuccessful('Successfully logged in as yeison@ejemplo.com')).toBe(true);
+  });
+
+  it('no confunde el pedido del código con haber entrado', () => {
+    expect(looksSuccessful('Paste code here if prompted > ')).toBe(false);
+  });
+});

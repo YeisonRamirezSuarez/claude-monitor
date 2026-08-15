@@ -488,3 +488,141 @@ input:focus {
     transition: none !important;
   }
 }
+
+/* --- visor de conversación --- */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: #02040ac9;
+  backdrop-filter: blur(3px);
+  display: flex;
+  padding: 28px;
+  z-index: 10;
+}
+
+.transcript {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid #38bdf84d;
+  border-radius: 14px;
+  box-shadow: 0 24px 70px #000000a6, 0 0 40px #38bdf814;
+  overflow: hidden;
+}
+
+.transcript header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  background: #0a1120b3;
+}
+
+.transcript header > div:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transcript header input {
+  width: 260px;
+}
+
+.transcript header button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.transcript header > button:last-child {
+  border: 1px solid var(--line);
+  padding: 7px 14px;
+}
+
+.transcript header > button:last-child:hover {
+  border-color: var(--neon);
+}
+
+.transcript-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px;
+}
+
+.turno {
+  border-left: 2px solid var(--line);
+  padding: 0 0 0 14px;
+  margin-bottom: 20px;
+}
+
+.turno.user {
+  border-left-color: var(--neon);
+}
+
+.turno-quien {
+  margin: 0 0 4px;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.turno.user .turno-quien {
+  color: var(--neon);
+}
+
+.turno-texto {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.turno-tools {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--dim);
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+/* --- código de autorización del login --- */
+.login-code p {
+  margin: 0 0 10px;
+}
+
+.login-code-row {
+  display: flex;
+  gap: 8px;
+}
+
+.login-code-row input {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.login-code-row button:not(.primary) {
+  border: 1px solid var(--line);
+}
+
+.login-code-row button:not(.primary):hover {
+  border-color: var(--neon);
+}
+
+/* --- lo que le falta al Chrome de una cuenta --- */
+button.link.pendiente {
+  color: var(--warn);
+}
+
+button.link.pendiente:hover {
+  background: #fbbf2418;
+}
+
+.chrome-falta {
+  margin: 2px 8px 0;
+  font-size: 11px;
+  color: var(--warn);
+}
