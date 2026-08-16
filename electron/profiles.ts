@@ -7,6 +7,7 @@ import type { Profile, ProfileWithStatus } from '../shared/types';
 import { ensureAll, ensureHostScript } from './chrome-host';
 import { chromeStatus } from './chrome-launch';
 import { isLoggedIn } from './credentials';
+import { markOnboardingDone } from './onboarding';
 import { syncAll, syncPlugins } from './plugins';
 import { effectiveActiveId, visibleProfiles } from './profile-visibility';
 import { shareAll, shareProjects, unlinkShared } from './shared-projects';
@@ -68,7 +69,7 @@ export async function listProfiles(): Promise<{ activeProfileId: string; profile
       ...p,
       exists: await exists(p.configDir),
       authenticated: await isAuthenticated(p.configDir),
-      chrome: await chromeStatus(p.id),
+      chrome: await chromeStatus(p.id, p.name),
       usage: await readUsage(p.configDir)
     }))
   );
@@ -101,6 +102,16 @@ export async function shareAllProjects(): Promise<void> {
 export async function syncAllPlugins(): Promise<void> {
   const registry = await loadRegistry();
   await syncAll(registry.profiles, await getSharedRoot());
+}
+
+/** Marca todas las cuentas como ya presentadas. Arregla las creadas antes de
+ *  este cambio, que arrancaban pidiendo elegir método de ingreso. */
+export async function markOnboardingAll(): Promise<void> {
+  const registry = await loadRegistry();
+  const sharedRoot = await getSharedRoot();
+  for (const profile of registry.profiles) {
+    await markOnboardingDone(profile.configDir, sharedRoot).catch(() => {});
+  }
 }
 
 /** Deja el puente de Chrome de cada cuenta apuntando a su propia carpeta, para

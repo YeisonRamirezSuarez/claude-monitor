@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
-import { execFile } from 'node:child_process';
-import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { copyFile, cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { merge, readRecord, vale, writeRecord, type Observacion } from './browser-store';
 
 const run = promisify(execFile);
 
@@ -14,16 +14,25 @@ const run = promisify(execFile);
  * La extensión de Claude no se autentica con el token del CLI: usa la sesión
  * web de claude.ai que hay en Chrome, y exige que sea la MISMA cuenta con la
  * que corre Claude Code. Esa sesión es una cookie del navegador, y Chrome
- * guarda una sola por perfil — logueando la segunda cuenta se pisa la primera.
+ * guarda una sola por perfil.
  *
  * Rotar esa cookie desde la app sería descifrar y reinyectar credenciales de
- * sesión: no se hace. Lo que sí existe es la separación que Chrome ya trae —
- * un perfil por cuenta, cada uno con su propio store de cookies. Acá se lanza
- * Chrome con el perfil de la cuenta elegida; el login a claude.ai lo hace el
- * usuario, una vez, y de ahí en más lo recuerda Chrome.
+ * sesión: no se hace. Se usa la separación que Chrome ya trae.
  *
- * Sigue siendo una cuenta a la vez: el registro de native messaging y el pipe
- * del puente son únicos por usuario de Windows.
+ * Cada cuenta tiene su propio `--user-data-dir`, y no un perfil dentro del
+ * Chrome del usuario. La razón es concreta: con Chrome ya abierto,
+ * `--profile-directory` SE IGNORA — la instancia que está corriendo se queda
+ * con la URL y la abre en el perfil que ya tenía. Medido: pidiendo
+ * `Claude-204db0cb` con otra ventana abierta, el único proceso de navegador
+ * seguía siendo el otro perfil, y con `--new-window` pasaba lo mismo. Por eso
+ * abrieras la cuenta que abrieras, caías siempre en la misma.
+ *
+ * `--user-data-dir` no tiene ese problema: cada carpeta es su propia instancia
+ * de Chrome, con su propio candado, así que no hay forma de que otra se quede
+ * con la ventana. Además pueden convivir dos cuentas abiertas a la vez.
+ *
+ * Sigue siendo una cuenta a la vez para la extensión: el registro de native
+ * messaging y el pipe del puente son únicos por usuario de Windows.
  */
 
 /** Dónde buscar `chrome.exe` cuando el registro no lo dice. */
@@ -61,23 +70,28 @@ export async function findChrome(): Promise<string | null> {
   return null;
 }
 
+const localAppData = () => process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local');
+
+/** La carpeta de datos del Chrome del usuario. Sólo se usa para migrar lo que
+ *  quedó de cuando las cuentas eran perfiles ahí adentro. */
+export const chromeUserData = () => join(localAppData(), 'Google', 'Chrome', 'User Data');
+
 /**
- * El nombre de la carpeta del perfil de Chrome de una cuenta.
+ * La carpeta de datos del Chrome de una cuenta.
  *
- * Va derivado del id y no del nombre que puso el usuario: el nombre se puede
- * repetir o cambiar, y renombrar la carpeta le haría perder a Chrome las
- * cookies —que es justo lo único que este perfil existe para guardar—. Sólo
- * letras, números y guiones, que es lo que un nombre de carpeta aguanta.
+ * Va derivada del id y no del nombre que puso el usuario: el nombre se puede
+ * cambiar, y mover la carpeta le haría perder a Chrome las cookies, que es lo
+ * único que este navegador existe para guardar.
  */
-export function chromeProfileName(profileId: string): string {
-  return `Claude-${profileId.replace(/[^A-Za-z0-9-]/g, '')}`;
+export function browserDir(profileId: string): string {
+  return join(localAppData(), 'claude-monitor', 'chrome', profileId.replace(/[^A-Za-z0-9-]/g, ''));
 }
 
-/** La carpeta de datos de Chrome del usuario, donde viven los perfiles. */
-export function chromeUserData(): string {
-  const localAppData = process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local');
-  return join(localAppData, 'Google', 'Chrome', 'User Data');
-}
+/** Cómo se llamaba el perfil cuando vivían dentro del Chrome del usuario. */
+export const legacyProfileName = (profileId: string) => `Claude-${profileId.replace(/[^A-Za-z0-9-]/g, '')}`;
+
+/** Dentro de su propia carpeta de datos, Chrome usa el perfil `Default`. */
+const profilePath = (profileId: string, ...parts: string[]) => join(browserDir(profileId), 'Default', ...parts);
 
 /** El id de la extensión de Claude. Sale del `allowed_origins` del manifiesto
  *  del native host que instala Claude Code. */
@@ -86,18 +100,51 @@ export const EXTENSION_ID = 'fcoeoabgfenejglbffodgkkbkcdhcgfn';
 const STORE_URL = `https://chromewebstore.google.com/detail/${EXTENSION_ID}`;
 const CLAUDE_URL = 'https://claude.ai';
 
+/** Migraciones en curso, para que dos lecturas simultáneas no copien lo mismo
+ *  dos veces. `listProfiles` consulta todas las cuentas en paralelo. */
+const migrando = new Map<string, Promise<void>>();
+
 /**
- * Qué abrir para esta cuenta, según lo que le falte.
+ * Trae lo que la cuenta tenía cuando su navegador era un perfil dentro del
+ * Chrome del usuario: sesión de claude.ai, extensión y lo demás.
  *
- * Una sola pestaña por vez, y en orden: primero la sesión de claude.ai, después
- * la extensión. Abrir las dos juntas dejaba tres pestañas encimadas y no se
- * entendía cuál atender primero — y encima la extensión no sirve de nada hasta
- * que la sesión exista.
+ * Se copia también el `Local State` de origen, y no es un detalle: ahí vive la
+ * clave con la que están cifradas las cookies. Sin ella, la sesión no se puede
+ * descifrar en la carpeta nueva y habría que iniciarla de nuevo.
+ *
+ * Se copia a un nombre aparte y recién al terminar se renombra al definitivo.
+ * El renombre es atómico, así que la carpeta buena nunca existe a medias: o no
+ * está, o está completa. Copiando directo sobre el destino, cualquier lectura
+ * durante los ~80 MB de copia veía un perfil sin cookies y lo reportaba como
+ * deslogueado — y peor, se podía llegar a abrir Chrome sobre eso.
+ *
+ * No borra el perfil viejo. Si algo sale mal, sigue estando.
  */
-export function nextStepUrl(status: ChromeStatus): string {
-  if (!status.loggedIn) return CLAUDE_URL;
-  if (!status.extension) return STORE_URL;
-  return CLAUDE_URL;
+function migrateLegacy(profileId: string): Promise<void> {
+  const enCurso = migrando.get(profileId);
+  if (enCurso) return enCurso;
+
+  const tarea = (async () => {
+    const destino = browserDir(profileId);
+    if (await stat(destino).catch(() => null)) return; // ya migrada o ya creada
+
+    const origen = join(chromeUserData(), legacyProfileName(profileId));
+    if (!(await stat(origen).catch(() => null))) return; // no hay nada que traer
+
+    const parcial = `${destino}.migrando-${randomUUID().slice(0, 8)}`;
+    try {
+      await mkdir(parcial, { recursive: true });
+      await cp(origen, join(parcial, 'Default'), { recursive: true });
+      await copyFile(join(chromeUserData(), 'Local State'), join(parcial, 'Local State')).catch(() => {});
+      await rename(parcial, destino);
+    } catch {
+      // A medio copiar no sirve de nada y confundiría a la próxima pasada.
+      await rm(parcial, { recursive: true, force: true }).catch(() => {});
+    }
+  })().finally(() => migrando.delete(profileId));
+
+  migrando.set(profileId, tarea);
+  return tarea;
 }
 
 /** Si un archivo de preferencias de Chrome declara la extensión instalada. */
@@ -112,88 +159,192 @@ export function declaresExtension(prefs: string, id = EXTENSION_ID): boolean {
 }
 
 /**
- * Si el perfil tiene instalada la extensión de Claude.
+ * Si el navegador de la cuenta tiene instalada la extensión de Claude.
  *
- * Las extensiones son por perfil: un perfil nuevo nace sin ninguna, aunque el
- * perfil `Default` las tenga todas. Sin la extensión, la sesión del CLI dice
- * "browser extension is not connected" por más que claude.ai esté logueado —
- * que es exactamente lo que pasaba.
+ * Las extensiones son por perfil: uno nuevo nace sin ninguna, aunque el Chrome
+ * de siempre las tenga todas. Sin la extensión, la sesión del CLI dice "browser
+ * extension is not connected" por más que claude.ai esté logueado.
  *
  * Chrome reparte esto entre `Preferences` y `Secure Preferences` según la
  * versión y cómo se instaló, así que se miran los dos.
  */
-export async function hasExtension(profileName: string): Promise<boolean> {
+export async function hasExtension(profileId: string): Promise<boolean> {
   for (const file of ['Preferences', 'Secure Preferences']) {
-    const raw = await readFile(join(chromeUserData(), profileName, file), 'utf8').catch(() => null);
+    const raw = await readFile(profilePath(profileId, file), 'utf8').catch(() => null);
     if (raw && declaresExtension(raw)) return true;
   }
   return false;
 }
 
 /**
- * Si el perfil tiene iniciada la sesión de claude.ai.
+ * Si el navegador de la cuenta tiene iniciada la sesión de claude.ai.
  *
  * Se busca el NOMBRE de la cookie `sessionKey` pegado a su dominio, que es como
  * quedan contiguos en el registro de SQLite. No se lee ningún valor: los de las
  * cookies están cifrados y no hacen falta — alcanza con saber si existe.
- *
- * Es una heurística sobre el archivo crudo, no una consulta SQL: traer un motor
- * de base de datos para responder "sí o no" no se justifica. Si algún día el
- * formato cambia, esto dice "no logueado" y a lo sumo se muestra un aviso de
- * más; nunca al revés.
  */
 export function hasSessionCookie(cookies: Buffer): boolean {
   return cookies.includes('claude.aisessionKey');
 }
 
-/** Lo que le falta —o no— al Chrome de una cuenta. */
+/** Lo que le falta —o no— al navegador de una cuenta. */
 export type ChromeStatus = { profileExists: boolean; extension: boolean; loggedIn: boolean };
 
-export async function chromeStatus(profileId: string): Promise<ChromeStatus> {
-  const name = chromeProfileName(profileId);
-  const dir = join(chromeUserData(), name);
-  const profileExists = Boolean(await stat(dir).catch(() => null));
-  if (!profileExists) return { profileExists: false, extension: false, loggedIn: false };
+/** Dónde se anota lo que la app sabe de cada navegador. */
+export const storeDir = () => join(localAppData(), 'claude-monitor', 'browsers');
 
-  return { profileExists, extension: await hasExtension(name), loggedIn: await readSession(dir) };
+/** Si el navegador de la cuenta conoce ese identificador de dispositivo. La
+ *  extensión guarda su estado en el almacén local de Chrome; no se interpreta
+ *  el formato, sólo se busca si el identificador está ahí. */
+async function browserKnowsDevice(profileId: string, deviceId: string): Promise<Observacion> {
+  const dir = profilePath(profileId, 'Local Extension Settings', EXTENSION_ID);
+  const archivos = await readdir(dir).catch(() => null);
+  if (archivos === null) return { ok: false, readable: false }; // la extensión nunca corrió acá
+
+  for (const f of archivos) {
+    const buf = await readFile(join(dir, f)).catch(() => null);
+    if (buf?.includes(deviceId)) return { ok: true, readable: true };
+  }
+  return { ok: false, readable: true };
 }
 
 /**
- * Lee el archivo de cookies del perfil y dice si está la sesión.
+ * Borra el emparejamiento de la extensión si apunta a un navegador que no es el
+ * de esta cuenta.
+ *
+ * `chromeExtension.pairedDeviceId` identifica al NAVEGADOR con el que la cuenta
+ * se emparejó. Cuando cada cuenta era un perfil dentro del Chrome del usuario,
+ * la app copiaba ese dato entre cuentas: era el mismo navegador y servía. Con
+ * un navegador propio por cuenta dejó de servir — y quedó peor que no tenerlo,
+ * porque la configuración afirma estar emparejada con un dispositivo que no
+ * existe, y el emparejamiento real nunca llega a hacerse.
+ *
+ * Visto en esta máquina: las cuentas apuntaban a "Browser 1", un identificador
+ * que ningún navegador del equipo conocía.
+ *
+ * Sólo borra cuando de verdad se pudo mirar el almacén de la extensión y el
+ * identificador no estaba. Si no se pudo mirar, se deja como está: un
+ * emparejamiento bueno borrado por las dudas obliga a rehacerlo a mano.
+ */
+export async function pruneStalePairing(configDir: string, profileId: string): Promise<boolean> {
+  const path = join(configDir, '.claude.json');
+  const raw = await readFile(path, 'utf8').catch(() => null);
+  if (raw === null) return false;
+
+  let config: Record<string, unknown>;
+  try {
+    config = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+
+  const pairing = config.chromeExtension as { pairedDeviceId?: unknown } | undefined;
+  const deviceId = pairing?.pairedDeviceId;
+  if (typeof deviceId !== 'string' || !deviceId) return false;
+
+  const conocido = await browserKnowsDevice(profileId, deviceId);
+  if (!conocido.readable || conocido.ok) return false;
+
+  delete config.chromeExtension;
+  await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  return true;
+}
+
+/**
+ * Qué le falta al navegador de una cuenta.
+ *
+ * Lo que se devuelve sale del registro en disco, no de mirar los archivos de
+ * Chrome en el momento. Mirar sirve para ACTUALIZAR el registro, no para
+ * reemplazarlo: mientras Chrome escribe, o mientras se copia un perfil, lo que
+ * se lee no refleja la realidad, y así fue como la app llegó a avisar "falta
+ * iniciar sesión" sobre cuentas que la tenían. Ver `browser-store.ts`.
+ */
+export async function chromeStatus(profileId: string, accountName = ''): Promise<ChromeStatus> {
+  await migrateLegacy(profileId).catch(() => {});
+
+  const previo = await readRecord(storeDir(), profileId);
+  const profileExists = Boolean(await stat(profilePath(profileId)).catch(() => null));
+
+  const registro = merge(
+    previo,
+    {
+      id: profileId,
+      userDataDir: browserDir(profileId),
+      displayName: previo?.displayName || (accountName ? displayName(accountName) : '')
+    },
+    // Sin carpeta no hay nada que mirar, y tampoco hay que desmentir lo
+    // guardado: `readable: false` deja el último estado conocido en su lugar.
+    profileExists ? await observeSession(profileId) : { ok: false, readable: false },
+    profileExists ? await observeExtension(profileId) : { ok: false, readable: false }
+  );
+  await writeRecord(storeDir(), registro).catch(() => {});
+
+  return { profileExists, extension: vale(registro.extension), loggedIn: vale(registro.session) };
+}
+
+/**
+ * Lee el archivo de cookies y dice si está la sesión.
  *
  * El nombre del temporal lleva un identificador único, y no es adorno: la lista
  * de cuentas se refresca sola al volver el foco, así que puede haber dos
- * lecturas en vuelo a la vez —incluso desde procesos distintos—. Con un nombre
- * fijo, una borraba la copia mientras la otra la leía y la cuenta aparecía
- * deslogueada sin estarlo. Ese era el "ya había iniciado sesión y me dice que
- * no".
+ * lecturas en vuelo a la vez. Con un nombre fijo, una borraba la copia mientras
+ * la otra la leía y la cuenta aparecía deslogueada sin estarlo.
  *
  * Si la copia falla se intenta leer el original: Chrome tiene el archivo
  * tomado, pero permite leerlo.
  */
-async function readSession(dir: string): Promise<boolean> {
-  const origen = join(dir, 'Network', 'Cookies');
+async function observeSession(profileId: string): Promise<Observacion> {
+  const origen = profilePath(profileId, 'Network', 'Cookies');
   const copia = join(tmpdir(), `cm-cookies-${randomUUID()}`);
   try {
     await copyFile(origen, copia);
-    return hasSessionCookie(await readFile(copia));
+    return { ok: hasSessionCookie(await readFile(copia)), readable: true };
   } catch {
+    // La copia falló —Chrome lo tiene tomado, o el archivo no está—; se intenta
+    // el original. Si tampoco se puede, se informa que NO se pudo mirar, que no
+    // es lo mismo que "no hay sesión".
     return await readFile(origen)
-      .then(hasSessionCookie)
-      .catch(() => false);
+      .then((buf) => ({ ok: hasSessionCookie(buf), readable: true }))
+      .catch(() => ({ ok: false, readable: false }));
   } finally {
     await rm(copia, { force: true }).catch(() => {});
   }
 }
 
-/** Cómo se va a ver el perfil en el selector de Chrome. Con prefijo para que se
- *  agrupen y se distingan de los perfiles que el usuario haya hecho a mano. */
+/** Igual que `hasExtension`, pero distinguiendo "no está" de "no se pudo leer".
+ *  Los dos archivos ausentes significan que no hay nada que leer todavía. */
+async function observeExtension(profileId: string): Promise<Observacion> {
+  let leido = false;
+  for (const file of ['Preferences', 'Secure Preferences']) {
+    const raw = await readFile(profilePath(profileId, file), 'utf8').catch(() => null);
+    if (raw === null) continue;
+    leido = true;
+    if (declaresExtension(raw)) return { ok: true, readable: true };
+  }
+  return { ok: false, readable: leido };
+}
+
+/**
+ * Qué abrir para esta cuenta, según lo que le falte.
+ *
+ * Una sola pestaña por vez, y en orden: primero la sesión de claude.ai, después
+ * la extensión. Abrir las dos juntas dejaba pestañas encimadas y no se entendía
+ * cuál atender primero — y encima la extensión no sirve de nada hasta que la
+ * sesión exista.
+ */
+export function nextStepUrl(status: ChromeStatus): string {
+  if (!status.loggedIn) return CLAUDE_URL;
+  if (!status.extension) return STORE_URL;
+  return CLAUDE_URL;
+}
+
+/** Cómo se va a ver el navegador de esta cuenta. */
 export function displayName(accountName: string): string {
   return `Claude · ${accountName}`.replace(/\s+/g, ' ').trim();
 }
 
-/** El `Preferences` del perfil con el nombre puesto, o `null` si ya estaba así.
- *  Se conserva todo el resto: ahí vive la configuración entera del perfil. */
+/** El `Preferences` con el nombre puesto, o `null` si ya estaba así. Se
+ *  conserva todo el resto: ahí vive la configuración entera del perfil. */
 export function withProfileName(prefs: string, name: string): string | null {
   let o: Record<string, unknown>;
   try {
@@ -206,84 +357,49 @@ export function withProfileName(prefs: string, name: string): string | null {
   return JSON.stringify({ ...o, profile: { ...profile, name } });
 }
 
-/**
- * El `Local State` con el nombre del perfil actualizado.
- *
- * Es el archivo que alimenta el selector de perfiles de Chrome. Sólo se toca la
- * entrada que ya existe: dar de alta un perfil en esa lista es cosa de Chrome, y
- * inventar una entrada rompería el selector.
- */
-export function withInfoCacheName(localState: string, dir: string, name: string): string | null {
-  let o: Record<string, unknown>;
-  try {
-    o = JSON.parse(localState) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-  const profile = o.profile as { info_cache?: Record<string, Record<string, unknown>> } | undefined;
-  const entry = profile?.info_cache?.[dir];
-  if (!entry || entry.name === name) return null;
-  entry.name = name;
-  return JSON.stringify(o);
-}
-
-/** Si hay algún Chrome corriendo. Con Chrome abierto no se le pueden reescribir
- *  las preferencias: las tiene en memoria y las vuelca al cerrar, pisando lo que
- *  hayamos puesto. */
-async function chromeRunning(): Promise<boolean> {
-  const stdout = await run('tasklist', ['/FI', 'IMAGENAME eq chrome.exe', '/NH'])
+/** Si el navegador de ESTA cuenta está corriendo. Con Chrome abierto no se le
+ *  pueden reescribir las preferencias: las tiene en memoria y las vuelca al
+ *  cerrar, pisando lo que hayamos puesto. Se mira sólo su instancia: el Chrome
+ *  de siempre del usuario no tiene nada que ver. */
+async function instanceRunning(profileId: string): Promise<boolean> {
+  const dir = browserDir(profileId);
+  const stdout = await run('powershell', [
+    '-NoProfile',
+    '-Command',
+    "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | ForEach-Object { $_.CommandLine }"
+  ])
     .then((r) => r.stdout)
     .catch(() => '');
-  return /chrome\.exe/i.test(stdout);
+  return stdout.toLowerCase().includes(dir.toLowerCase());
 }
 
 /**
- * Le pone a un perfil de Chrome el nombre de la cuenta.
+ * Le pone al navegador de la cuenta el nombre de la cuenta.
  *
- * Sin esto los perfiles salen como "Persona 1", "Persona 2"… y no hay forma de
- * saber cuál es cuál desde el navegador.
- *
- * Devuelve `true` si quedó aplicado. Si el perfil ya existe y Chrome está
- * abierto no se toca nada: hay que esperar a que se cierre. Un perfil que
- * todavía no existe sí se puede nombrar de entrada, sembrando su `Preferences`
- * antes de que Chrome lo cree — que es el caso de una cuenta recién agregada.
+ * Devuelve `true` si quedó aplicado. Con esa instancia abierta no se toca nada:
+ * hay que esperar a que se cierre. Una carpeta que todavía no existe sí se
+ * puede nombrar de entrada, sembrando su `Preferences` antes de que Chrome la
+ * cree — que es el caso de una cuenta recién agregada.
  */
-export async function setProfileDisplayName(profileName: string, name: string): Promise<boolean> {
-  const dir = join(chromeUserData(), profileName);
-  const prefsPath = join(dir, 'Preferences');
+export async function setProfileDisplayName(profileId: string, name: string): Promise<boolean> {
+  const prefsPath = profilePath(profileId, 'Preferences');
   const prefs = await readFile(prefsPath, 'utf8').catch(() => null);
 
   if (prefs === null) {
-    await mkdir(dir, { recursive: true });
+    await mkdir(profilePath(profileId), { recursive: true });
     await writeFile(prefsPath, JSON.stringify({ profile: { name } }), 'utf8');
     return true;
   }
 
-  if (await chromeRunning()) return false;
+  if (await instanceRunning(profileId)) return false;
 
   const patched = withProfileName(prefs, name);
   if (patched) await writeFile(prefsPath, patched, 'utf8');
-
-  const statePath = join(chromeUserData(), 'Local State');
-  const state = await readFile(statePath, 'utf8').catch(() => null);
-  const patchedState = state && withInfoCacheName(state, profileName, name);
-  if (patchedState) await writeFile(statePath, patchedState, 'utf8');
-
   return true;
 }
 
 /**
- * Abre Chrome con el perfil de esta cuenta, en claude.ai.
- *
- * Siempre abre claude.ai, no sólo la primera vez. La versión anterior decidía
- * eso mirando si existía la carpeta del perfil, y estaba mal: Chrome la crea al
- * arrancar, se haya iniciado sesión o no. Alcanzaba con abrir y cerrar sin
- * loguearse para que la app diera el perfil por listo y no volviera a llevar a
- * claude.ai — quedando en un estado del que no se salía.
- *
- * Abrir claude.ai siempre no tiene ese problema y encima se verifica solo: si
- * la sesión está iniciada, carga y de paso muestra con qué cuenta; si no, pide
- * el login, que es justo lo que falta.
+ * Abre el Chrome de esta cuenta.
  *
  * Abre UNA pestaña: la que corresponda según lo que le falte a la cuenta, o la
  * que pida el llamador (la autorización del login). Nunca varias — ver
@@ -302,17 +418,19 @@ export async function openChromeForProfile(
     throw new Error('No se encontró chrome.exe. ¿Está instalado Google Chrome?');
   }
 
-  const name = chromeProfileName(profileId);
-  const firstRun = !(await stat(join(chromeUserData(), name)).catch(() => null));
+  const dir = browserDir(profileId);
+  // Primero el estado: es lo que dispara la migración y espera a que termine, así
+  // nunca se abre Chrome sobre un perfil a medio copiar.
   const status = await chromeStatus(profileId);
-  // Antes de abrirlo, para que Chrome lo lea al arrancar el perfil.
-  const pendingRename = !(await setProfileDisplayName(name, displayName(accountName)).catch(() => false));
-
-  const args = [`--profile-directory=${name}`, url ?? nextStepUrl(status)];
-  const needsExtension = !status.extension;
+  const firstRun = !(await stat(dir).catch(() => null));
+  // Antes de abrirlo, para que Chrome lo lea al arrancar.
+  const pendingRename = !(await setProfileDisplayName(profileId, displayName(accountName)).catch(() => false));
 
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(chrome, args, { detached: true, stdio: 'ignore' });
+    const child = spawn(chrome, [`--user-data-dir=${dir}`, url ?? nextStepUrl(status)], {
+      detached: true,
+      stdio: 'ignore'
+    });
     child.once('spawn', () => {
       child.unref();
       resolve();
@@ -320,5 +438,5 @@ export async function openChromeForProfile(
     child.once('error', reject);
   });
 
-  return { firstRun, needsExtension, pendingRename };
+  return { firstRun, needsExtension: !status.extension, pendingRename };
 }

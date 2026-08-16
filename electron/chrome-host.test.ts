@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildScript, ensureHostScript, parseClaudeExe, patchScript, readPairing, sharePairing, withPairing } from './chrome-host';
+import { buildScript, ensureHostScript, parseClaudeExe, patchScript } from './chrome-host';
 
 /** El `.bat` real que genera Claude Code, tal cual está en disco. */
 const ORIGINAL = [
@@ -119,87 +119,3 @@ describe('ensureHostScript', () => {
   });
 });
 
-const PAREJA = { pairedDeviceId: '7ef9c3cc', pairedDeviceName: 'Browser 1' };
-const EMPAREJADO = JSON.stringify({ numStartups: 4, chromeExtension: PAREJA });
-
-describe('readPairing', () => {
-  it('lo encuentra en ~/.claude.json, AL LADO de la carpeta y no adentro', async () => {
-    const casa = await tmp('cm-casa-');
-    try {
-      await mkdir(join(casa, '.claude'), { recursive: true });
-      await writeFile(join(casa, '.claude.json'), EMPAREJADO);
-      expect(await readPairing(join(casa, '.claude'))).toEqual(PAREJA);
-    } finally {
-      await rm(casa, { recursive: true, force: true });
-    }
-  });
-
-  it('gana el que TIENE emparejamiento, no el primero que aparece', async () => {
-    // El caso real: existen los dos .claude.json y sólo el de afuera está emparejado.
-    const casa = await tmp('cm-casa-');
-    const pozo = join(casa, '.claude');
-    try {
-      await mkdir(pozo, { recursive: true });
-      await writeFile(join(casa, '.claude.json'), EMPAREJADO);
-      await writeFile(join(pozo, '.claude.json'), '{"numStartups":9}');
-      expect(await readPairing(pozo)).toEqual(PAREJA);
-    } finally {
-      await rm(casa, { recursive: true, force: true });
-    }
-  });
-
-  it('sin emparejamiento en ningún lado devuelve null, en vez de inventar uno', async () => {
-    const pozo = await tmp('cm-pozo-');
-    try {
-      await writeFile(join(pozo, '.claude.json'), '{"numStartups":1}');
-      expect(await readPairing(pozo)).toBeNull();
-    } finally {
-      await rm(pozo, { recursive: true, force: true });
-    }
-  });
-});
-
-describe('withPairing', () => {
-  it('le pone a la cuenta el emparejamiento que este Chrome ya hizo', () => {
-    const salida = JSON.parse(withPairing(PAREJA, '{"numStartups":1}')!);
-    expect(salida.chromeExtension).toEqual(PAREJA);
-    expect(salida.numStartups).toBe(1);
-  });
-
-  it('no toca el resto del archivo, que tiene 40 KB de estado de la cuenta', () => {
-    const propio = JSON.stringify({ tipsHistory: { a: 1 }, oauthAccount: { emailAddress: 'yo@x.com' } });
-    const salida = JSON.parse(withPairing(PAREJA, propio)!);
-    expect(salida.oauthAccount.emailAddress).toBe('yo@x.com');
-    expect(salida.tipsHistory).toEqual({ a: 1 });
-  });
-
-  it('respeta el emparejamiento propio: pisarlo la desconectaría de su navegador', () => {
-    const propio = JSON.stringify({ chromeExtension: { pairedDeviceId: 'otro' } });
-    expect(withPairing(PAREJA, propio)).toBeNull();
-  });
-});
-
-describe('sharePairing', () => {
-  it('escribe el emparejamiento en la cuenta', async () => {
-    const cuenta = await tmp('cm-cuenta-');
-    try {
-      await writeFile(join(cuenta, '.claude.json'), '{"numStartups":1}');
-      expect(await sharePairing(cuenta, PAREJA)).toBe(true);
-      const o = JSON.parse(await readFile(join(cuenta, '.claude.json'), 'utf8'));
-      expect(o.chromeExtension).toEqual(PAREJA);
-    } finally {
-      await rm(cuenta, { recursive: true, force: true });
-    }
-  });
-
-  it('un .claude.json corrupto no se sobreescribe con nada', async () => {
-    const cuenta = await tmp('cm-cuenta-');
-    try {
-      await writeFile(join(cuenta, '.claude.json'), 'esto no es json');
-      expect(await sharePairing(cuenta, PAREJA)).toBe(false);
-      expect(await readFile(join(cuenta, '.claude.json'), 'utf8')).toBe('esto no es json');
-    } finally {
-      await rm(cuenta, { recursive: true, force: true });
-    }
-  });
-});

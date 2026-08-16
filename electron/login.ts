@@ -48,6 +48,19 @@ export function looksSuccessful(output: string): boolean {
   return /logged in|login success|signed in|sesión iniciada/i.test(output);
 }
 
+/*
+ * `claude auth login` abre la URL por su cuenta en el navegador por defecto, y
+ * NO hay forma de impedírselo: no tiene una opción para eso —las únicas son
+ * --claudeai, --console, --email y --sso— y pasarle un `BROWSER` que no abre
+ * nada tampoco sirve. Medido con Chrome cerrado: con `BROWSER` apuntando a un
+ * script mudo, igual levantó 8 procesos de Chrome. Coincide con lo que hace el
+ * binario, que pisa o borra esa variable por su cuenta.
+ *
+ * Por eso la pestaña del CLI cae en el Chrome por defecto y la de la app en el
+ * de la cuenta. Se prefiere que sobre una pestaña antes que autorizar en el
+ * navegador equivocado, que era el problema original.
+ */
+
 /**
  * Arranca el login y devuelve la URL a abrir.
  *
@@ -55,16 +68,15 @@ export function looksSuccessful(output: string): boolean {
  * `cancelLogin`. Un intento anterior de la misma cuenta se cancela, para no
  * dejar procesos colgados si el usuario le da dos veces.
  */
-export function startLogin(id: string, configDir: string): Promise<string> {
+export async function startLogin(id: string, configDir: string): Promise<string> {
   cancelLogin(id);
+
+  const env = sessionEnv(process.env, configDir);
 
   return new Promise((resolve, reject) => {
     // `shell: true` porque en Windows `claude` se resuelve por PATH y puede ser
     // un .cmd, que desde Node 20 no se puede spawnear sin shell.
-    const child = spawn('claude', ['auth', 'login'], {
-      env: sessionEnv(process.env, configDir),
-      shell: true
-    });
+    const child = spawn('claude', ['auth', 'login'], { env, shell: true });
     const state: Pending = { child, output: '' };
     pending.set(id, state);
 

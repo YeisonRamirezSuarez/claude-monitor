@@ -2,6 +2,7 @@ import { constants } from 'node:fs';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { Profile } from '../shared/types';
+import { pruneStalePairing } from './chrome-launch';
 
 /**
  * Hace que la extensión de Chrome hable con la cuenta que se está usando.
@@ -132,77 +133,17 @@ export async function ensureHostScript(configDir: string, sharedRoot?: string): 
 }
 
 /**
- * El emparejamiento de la extensión, que es lo único que le falta a una cuenta
- * para que la herramienta de navegador ande.
+ * Deja el puente de cada cuenta apuntando a su propia carpeta.
  *
- * Comparando una cuenta que anda con una que no, `chromeExtension` es la única
- * diferencia: mismo `cachedChromeExtensionInstalled`, mismo
- * `claudeInChromeDefaultEnabled`, mismo onboarding. Y el `pairedDeviceId`
- * identifica al NAVEGADOR ("Browser 1"), no a la cuenta — por eso se puede
- * copiar: es el mismo Chrome.
- *
- * Dónde está es la parte contraintuitiva. Hay DOS `.claude.json` para el pozo:
- * `~/.claude.json` es el que usa `claude` cuando `CLAUDE_CONFIG_DIR` no está
- * definido, y `~/.claude/.claude.json` el que usa cuando sí. Claude Monitor
- * siempre lo define, así que toda sesión abierta desde la app lee el segundo —
- * que nunca se emparejó. El emparejamiento del usuario vive en el primero,
- * porque lo hizo desde una terminal a mano. Por eso funciona ahí y no acá.
- *
- * Se buscan los dos y gana el que tenga emparejamiento.
+ * Acá vivía además una copia del emparejamiento de la extensión entre cuentas.
+ * Se sacó: identifica al NAVEGADOR, y desde que cada cuenta tiene el suyo,
+ * copiarlo dejaba a la cuenta afirmando estar emparejada con un navegador que
+ * no era el suyo — y el emparejamiento real nunca se hacía. Ver
+ * `pruneStalePairing` en `chrome-launch.ts`.
  */
-export async function readPairing(sharedRoot: string): Promise<Record<string, unknown> | null> {
-  for (const path of [join(dirname(sharedRoot), '.claude.json'), join(sharedRoot, '.claude.json')]) {
-    const raw = await readFile(path, 'utf8').catch(() => null);
-    if (raw === null) continue;
-    try {
-      const pairing = (JSON.parse(raw) as Record<string, unknown>).chromeExtension;
-      if (pairing && typeof pairing === 'object') return pairing as Record<string, unknown>;
-    } catch {
-      // config ilegible: se prueba la otra ubicación
-    }
-  }
-  return null;
-}
-
-/**
- * El `.claude.json` de la cuenta con el emparejamiento puesto, o `null` si no
- * hay nada que cambiar.
- *
- * Sólo rellena cuando la cuenta no tiene ninguno. Si ya emparejó por su cuenta,
- * ese valor manda: pisarlo la desconectaría de un navegador con el que ya se
- * entendía.
- */
-export function withPairing(pairing: Record<string, unknown>, ownRaw: string): string | null {
-  const own = JSON.parse(ownRaw) as Record<string, unknown>;
-  if (own.chromeExtension) return null;
-  return `${JSON.stringify({ ...own, chromeExtension: pairing }, null, 2)}\n`;
-}
-
-/** Le pasa a una cuenta el emparejamiento que este Chrome ya hizo, para que no
- *  arranque pidiendo emparejar algo que ya está emparejado. */
-export async function sharePairing(configDir: string, pairing: Record<string, unknown>): Promise<boolean> {
-  const path = join(configDir, '.claude.json');
-  const ownRaw = await readFile(path, 'utf8').catch(() => null);
-  if (ownRaw === null) return false;
-
-  let patched: string | null = null;
-  try {
-    patched = withPairing(pairing, ownRaw);
-  } catch {
-    return false; // config ilegible: no se toca nada
-  }
-  if (patched === null) return false;
-
-  await writeFile(path, patched, 'utf8');
-  return true;
-}
-
 export async function ensureAll(profiles: Profile[], sharedRoot: string): Promise<void> {
-  const pairing = await readPairing(sharedRoot).catch(() => null);
   for (const profile of profiles) {
     await ensureHostScript(profile.configDir, sharedRoot).catch(() => {});
-    // Incluye la cuenta del pozo: su `<configDir>/.claude.json` es un archivo
-    // distinto del que tiene el emparejamiento, y le falta igual que al resto.
-    if (pairing) await sharePairing(profile.configDir, pairing).catch(() => {});
+    await pruneStalePairing(profile.configDir, profile.id).catch(() => {});
   }
 }

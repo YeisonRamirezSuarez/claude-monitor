@@ -1,8 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ensureHostScript } from './chrome-host';
-import { openChromeForProfile } from './chrome-launch';
+import { chromeStatus, openChromeForProfile } from './chrome-launch';
+import { isLoggedIn } from './credentials';
 import { cancelLogin, startLogin, submitCode } from './login';
+import { markOnboardingDone } from './onboarding';
 import {
   createProfile,
   deleteProfile,
@@ -12,6 +15,7 @@ import {
   listProfiles,
   setActiveProfile,
   ensureChromeHosts,
+  markOnboardingAll,
   shareAllProjects,
   syncAllPlugins
 } from './profiles';
@@ -44,6 +48,31 @@ async function findSession(id: string) {
   const session = (await listSessions(sharedRoot)).find((s) => s.id === id);
   if (!session) throw new Error(`Sesión no encontrada: ${id}`);
   return { sharedRoot, session };
+}
+
+/**
+ * Corta antes de abrir la terminal si a la cuenta le falta el login.
+ *
+ * Si el CLI arranca sin credenciales, ofrece iniciar sesión y abre la pestaña
+ * en el navegador POR DEFECTO — no en el de la cuenta. Y eso no se puede
+ * redirigir: `BROWSER` no admite argumentos, así que no hay forma de indicarle
+ * un `--user-data-dir` (probado con y sin comillas: no abre nada). Si autoriza
+ * ahí, la sesión de claude.ai queda en el navegador equivocado y la extensión
+ * de la cuenta se queda sin nada.
+ *
+ * Por eso el login se resuelve entero en la app, antes. Es preferible frenar
+ * acá con una explicación a dejar que la terminal mande al lugar equivocado.
+ */
+async function requireLogin(profile: Profile): Promise<void> {
+  const credenciales = await readFile(join(profile.configDir, '.credentials.json'), 'utf8')
+    .then(JSON.parse)
+    .catch(() => null);
+  if (isLoggedIn(credenciales)) return;
+
+  throw new Error(
+    `La cuenta "${profile.name}" no tiene la sesión iniciada. Hacelo desde acá con "Iniciar sesión": ` +
+      'si dejás que te la pida la terminal, el login se abre en tu Chrome de siempre y la extensión de esta cuenta queda sin sesión.'
+  );
 }
 
 /**
@@ -98,6 +127,24 @@ function registerHandlers() {
   // extensión. Ver `login.ts`.
   handle('profiles:login', async (id: string) => {
     const profile = await getProfile(id);
+
+    // El navegador de la cuenta tiene que estar logueado ANTES de esto.
+    //
+    // `claude auth login` abre su propia pestaña en el navegador por defecto y
+    // no se le puede impedir: si el usuario autoriza ahí, la sesión de
+    // claude.ai queda guardada en el Chrome equivocado y el de la cuenta sigue
+    // vacío — que es exactamente por qué la extensión no funcionaba. Con la
+    // sesión ya iniciada acá, la pestaña que abre la app muestra el botón de
+    // autorizar directo, sin pedir login, y la otra queda como ruido inofensivo.
+    const estado = await chromeStatus(profile.id, profile.name);
+    if (!estado.loggedIn) {
+      await openChromeForProfile(profile.id, profile.name).catch(() => {});
+      throw new Error(
+        `Primero iniciá sesión en claude.ai dentro del Chrome de "${profile.name}", que se acaba de abrir. ` +
+          'Después volvé y tocá "Iniciar sesión". Si autorizás en tu Chrome de siempre, la sesión queda guardada ahí y la extensión no funciona.'
+      );
+    }
+
     const url = await startLogin(id, profile.configDir);
     const { needsExtension } = await openChromeForProfile(profile.id, profile.name, url).catch(() => {
       cancelLogin(id);
@@ -109,6 +156,12 @@ function registerHandlers() {
   // proceso: no se guarda ni se registra.
   handle('profiles:loginCode', async (id: string, code: string) => {
     await submitCode(id, code);
+    // El token ya está guardado, pero una carpeta nueva sigue sin la marca de
+    // presentación: sin ella el CLI arranca pidiendo elegir método de ingreso,
+    // y elegir ahí lanza otro login que abre el navegador por defecto. Ver
+    // `onboarding.ts`.
+    const profile = await getProfile(id);
+    await markOnboardingDone(profile.configDir, await getSharedRoot()).catch(() => {});
     return null;
   });
   handle('profiles:loginCancel', async (id: string) => {
@@ -131,6 +184,7 @@ function registerHandlers() {
   handle('sessions:resume', async (id: string) => {
     const { sharedRoot, session } = await findSession(id);
     const target = await getActiveProfile();
+    await requireLogin(target);
     await openTerminalAs(session.cwd, `claude --resume ${session.id}`, target);
     return {
       compactions: await countCompactions(join(sharedRoot, 'projects', session.projectSlug, `${session.id}.jsonl`))
@@ -141,6 +195,7 @@ function registerHandlers() {
   // desde la app. Abre `claude` (sin --resume) en la carpeta elegida.
   handle('sessions:new', async (cwd?: string) => {
     const profile = await getActiveProfile();
+    await requireLogin(profile);
     let dir = typeof cwd === 'string' && cwd ? cwd : null;
     if (!dir) {
       const picked = await dialog.showOpenDialog({
@@ -195,6 +250,8 @@ app.whenReady().then(async () => {
   await shareAllProjects().catch(() => {});
   // Y las deja con los plugins del pozo, para que toda sesión arranque igual.
   await syncAllPlugins().catch(() => {});
+  // Y sin el arranque de primera vez, que pide elegir método de ingreso.
+  await markOnboardingAll().catch(() => {});
   // Y con el puente de Chrome apuntando cada uno a su propia cuenta.
   await ensureChromeHosts().catch(() => {});
   registerHandlers();

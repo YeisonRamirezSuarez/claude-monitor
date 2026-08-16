@@ -111,17 +111,23 @@ function ProfileBlock({
             Iniciar sesión
           </button>
         )}
-        <button
-          className={`link${listo ? '' : ' pendiente'}`}
-          title={
-            listo
-              ? `Abrir el Chrome de "${profile.name}". Ya tiene la extensión y la sesión de claude.ai.`
-              : `Abrir el Chrome de "${profile.name}". Falta: ${falta.join(' y ')}.`
-          }
-          onClick={() => onOpenChrome(profile.id)}
-        >
-          Chrome{listo ? ' ✓' : ' !'}
-        </button>
+        {/* Sin sesión iniciada no hay nada que hacer en el navegador: la
+            extensión se autentica con la cuenta, así que primero el login. Con
+            los dos botones a la vez, el de Chrome sólo invita a un camino que
+            todavía no lleva a ningún lado. */}
+        {profile.authenticated && (
+          <button
+            className={`link${listo ? '' : ' pendiente'}`}
+            title={
+              listo
+                ? `Abrir el Chrome de "${profile.name}". Ya tiene la extensión y la sesión de claude.ai.`
+                : `Abrir el Chrome de "${profile.name}". Falta: ${falta.join(' y ')}.`
+            }
+            onClick={() => onOpenChrome(profile.id)}
+          >
+            Chrome{listo ? ' ✓' : ' !'}
+          </button>
+        )}
         {!profile.isDefault && (
           <button className="link danger" onClick={() => onRemove(profile.id)}>
             Quitar
@@ -131,6 +137,7 @@ function ProfileBlock({
       {!listo && profile.authenticated && (
         <p className="chrome-falta">Para la extensión falta: {falta.join(' y ')}. Tocá “Chrome”.</p>
       )}
+      {!profile.authenticated && <p className="chrome-falta">Iniciá sesión para poder usar esta cuenta.</p>}
       <Usage usage={profile.usage} />
     </li>
   );

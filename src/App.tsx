@@ -20,7 +20,7 @@ export default function App() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   // El login en curso: el CLI ya abrió la autorización y espera el código.
-  const [pendingLogin, setPendingLogin] = useState<{ id: string; needsExtension: boolean } | null>(null);
+  const [pendingLogin, setPendingLogin] = useState<{ id: string; name: string; needsExtension: boolean } | null>(null);
   const [loginCode, setLoginCode] = useState('');
 
   // Dos refresh pueden estar en vuelo a la vez (una acción y el listener de
@@ -109,7 +109,7 @@ export default function App() {
     setLoginCode('');
     const result = await window.claudeMonitor.loginProfile(id);
     if (!result.ok) return setError(result.error);
-    setPendingLogin({ id, needsExtension: result.data.needsExtension });
+    setPendingLogin({ id, name: profileList?.profiles.find((p) => p.id === id)?.name ?? '', needsExtension: result.data.needsExtension });
   };
 
   const sendCode = async () => {
@@ -170,12 +170,22 @@ export default function App() {
         }}
         onAddAccount={async (name) => {
           setError('');
+          setNotice('');
           const created = await window.claudeMonitor.createProfile(name);
           if (!created.ok) return setError(created.error);
           await refresh();
-          // Agregar la cuenta y conectarla es un solo recorrido: se crea y se
-          // arranca el login enseguida, en el Chrome de esa cuenta.
-          await startLogin(created.data.id);
+          // Primero el navegador, después el login del CLI. Al revés no
+          // funciona: `claude auth login` abre una pestaña en el Chrome de
+          // siempre, y si se autoriza ahí la sesión de claude.ai queda guardada
+          // en el navegador equivocado. Con el de la cuenta ya logueado, la
+          // pestaña correcta muestra el botón de autorizar directo.
+          const abierto = await window.claudeMonitor.openChrome(created.data.id);
+          if (!abierto.ok) return setError(abierto.error);
+          setNotice(
+            `Cuenta "${name}" creada. Se abrió su Chrome propio: ` +
+              '1) iniciá sesión en claude.ai ahí, 2) instalá la extensión de Claude en esa ventana, ' +
+              '3) volvé acá y tocá "Iniciar sesión". Usá SIEMPRE esa ventana y no tu Chrome de siempre.'
+          );
         }}
         onLogin={(id) => startLogin(id)}
         onOpenChrome={(id) => openChrome(id)}
@@ -197,9 +207,11 @@ export default function App() {
             }}
           >
             <p>
-              <strong>Autorizá en la ventana de Chrome que se abrió</strong> — es la de esta cuenta, no el Chrome
-              normal. Cuando termines te va a dar un código: pegalo acá.
-              {pendingLogin.needsExtension && ' Después de esto se abre la tienda para instalar la extensión.'}
+              <strong>Autorizá en la ventana “Claude · {pendingLogin.name}”</strong>, no en tu Chrome de siempre.
+              Como esa ventana ya tiene la sesión iniciada, te va a mostrar el botón de autorizar directo. El CLI
+              abre además una pestaña en tu Chrome normal que no se puede evitar: <strong>ignorala</strong> — si
+              autorizás ahí, la sesión queda guardada en el navegador equivocado. Cuando termines te da un código:
+              pegalo acá.
             </p>
             <div className="login-code-row">
               <input

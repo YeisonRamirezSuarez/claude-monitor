@@ -1,13 +1,17 @@
 // electron/chrome-launch.test.ts
 import { describe, it, expect } from 'vitest';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
-  chromeProfileName,
+  browserDir,
+  EXTENSION_ID,
+  pruneStalePairing,
   declaresExtension,
   displayName,
   hasSessionCookie,
   nextStepUrl,
   parseRegistryPath,
-  withInfoCacheName,
   withProfileName
 } from './chrome-launch';
 
@@ -32,17 +36,17 @@ describe('parseRegistryPath', () => {
   });
 });
 
-describe('chromeProfileName', () => {
-  it('deriva el nombre del id, que no cambia', () => {
-    expect(chromeProfileName('88eabab9')).toBe('Claude-88eabab9');
+describe('browserDir', () => {
+  it('cada cuenta tiene su propia carpeta de datos: compartirla compartiria la sesion', () => {
+    expect(browserDir('0cd7b804')).not.toBe(browserDir('204db0cb'));
   });
 
   it('descarta lo que una carpeta no aguanta', () => {
-    expect(chromeProfileName('a b/c:d\\e')).toBe('Claude-abcde');
+    expect(browserDir('a b/c:d')).toContain('abcd');
   });
 
-  it('cuentas distintas nunca comparten perfil: compartirlo compartiría la sesión', () => {
-    expect(chromeProfileName('0cd7b804')).not.toBe(chromeProfileName('204db0cb'));
+  it('no cuelga del Chrome del usuario: es una instancia aparte (regresion: siempre abria el mismo perfil)', () => {
+    expect(browserDir('a1').toLowerCase()).not.toContain('google');
   });
 });
 
@@ -91,23 +95,6 @@ describe('withProfileName', () => {
   });
 });
 
-describe('withInfoCacheName', () => {
-  it('renombra la entrada del selector', () => {
-    const state = JSON.stringify({
-      profile: { info_cache: { 'Claude-a1': { name: 'Persona 2', otro: 1 }, Default: { name: 'Tu Chrome' } } }
-    });
-    const salida = JSON.parse(withInfoCacheName(state, 'Claude-a1', 'Claude · personal')!);
-    expect(salida.profile.info_cache['Claude-a1'].name).toBe('Claude · personal');
-    expect(salida.profile.info_cache['Claude-a1'].otro).toBe(1);
-    expect(salida.profile.info_cache.Default.name).toBe('Tu Chrome');
-  });
-
-  it('no da de alta perfiles que Chrome no conoce: inventar entradas rompe el selector', () => {
-    const state = JSON.stringify({ profile: { info_cache: { Default: { name: 'Tu Chrome' } } } });
-    expect(withInfoCacheName(state, 'Claude-nuevo', 'X')).toBeNull();
-  });
-});
-
 describe('hasSessionCookie', () => {
   it('reconoce la sesión de claude.ai', () => {
     expect(hasSessionCookie(Buffer.from('...claude.aisessionKey...'))).toBe(true);
@@ -137,6 +124,59 @@ describe('nextStepUrl', () => {
   it('nunca devuelve dos destinos: una pestaña por vez (regresión: se abrían tres)', () => {
     for (const s of [estado(false, false), estado(true, false), estado(true, true)]) {
       expect(nextStepUrl(s).split(' ')).toHaveLength(1);
+    }
+  });
+});
+
+describe('pruneStalePairing', () => {
+  const conPareja = (id: string) =>
+    JSON.stringify({ oauthAccount: { emailAddress: 'yo@x.com' }, chromeExtension: { pairedDeviceId: id } });
+
+  it('borra el emparejamiento que apunta a un navegador que este no conoce (regresión: "Browser 1" fantasma)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cm-pair-'));
+    try {
+      const id = 'cuenta-de-prueba';
+      // El almacén de la extensión existe pero no menciona ese dispositivo.
+      const store = join(browserDir(id), 'Default', 'Local Extension Settings', EXTENSION_ID);
+      await mkdir(store, { recursive: true });
+      await writeFile(join(store, '000003.log'), 'otro-dispositivo-cualquiera');
+      await writeFile(join(dir, '.claude.json'), conPareja('7ef9c3cc-fantasma'));
+
+      expect(await pruneStalePairing(dir, id)).toBe(true);
+      const salida = JSON.parse(await readFile(join(dir, '.claude.json'), 'utf8'));
+      expect(salida.chromeExtension).toBeUndefined();
+      expect(salida.oauthAccount.emailAddress).toBe('yo@x.com'); // el resto intacto
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+      await rm(browserDir('cuenta-de-prueba'), { recursive: true, force: true });
+    }
+  });
+
+  it('respeta el emparejamiento que SÍ es de su navegador', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cm-pair-'));
+    try {
+      const id = 'cuenta-buena';
+      const store = join(browserDir(id), 'Default', 'Local Extension Settings', EXTENSION_ID);
+      await mkdir(store, { recursive: true });
+      await writeFile(join(store, '000003.log'), 'ruido mi-dispositivo mas ruido');
+      await writeFile(join(dir, '.claude.json'), conPareja('mi-dispositivo'));
+
+      expect(await pruneStalePairing(dir, id)).toBe(false);
+      expect(JSON.parse(await readFile(join(dir, '.claude.json'), 'utf8')).chromeExtension).toBeDefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+      await rm(browserDir('cuenta-buena'), { recursive: true, force: true });
+    }
+  });
+
+  it('sin poder mirar el almacén no borra nada: uno bueno borrado obliga a rehacerlo a mano', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cm-pair-'));
+    try {
+      await writeFile(join(dir, '.claude.json'), conPareja('quien-sabe'));
+      expect(await pruneStalePairing(dir, 'cuenta-sin-navegador')).toBe(false);
+      expect(JSON.parse(await readFile(join(dir, '.claude.json'), 'utf8')).chromeExtension).toBeDefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });
