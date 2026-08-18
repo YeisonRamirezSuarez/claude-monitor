@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { AccountUsage, ProfileList, ProfileWithStatus, SessionMeta } from '../shared/types';
 import AccountIcon from './AccountIcon';
-import { relativeDate } from './format';
+import { projectName, relativeDate } from './format';
 
 const FULL_DATE = new Intl.DateTimeFormat('es', { dateStyle: 'medium', timeStyle: 'short' });
 
@@ -58,8 +58,7 @@ type Props = {
 
 /** Nombre corto del proyecto: última carpeta del cwd de sus sesiones. */
 function projectLabel(sessions: SessionMeta[]): string {
-  const cwd = sessions[0]?.cwd ?? '';
-  return cwd.split(/[\\/]/).filter(Boolean).pop() ?? sessions[0]?.projectSlug ?? '';
+  return projectName(sessions[0]?.cwd ?? '') || sessions[0]?.projectSlug || '';
 }
 
 /** Una cuenta con su estado y su consumo. La activa no se puede "elegir": ya
@@ -82,9 +81,12 @@ function ProfileBlock({
   // Qué le falta al Chrome de esta cuenta. Sin esto sólo se descubre fallando:
   // se abre el navegador, la extensión dice "not connected", y no hay forma de
   // saber si lo que falta es la extensión o el login.
+  // El orden es el mismo que sigue la app al abrir Chrome (`nextStepUrl`):
+  // primero la extensión, después la sesión. Listarlo al revés mandaba al
+  // usuario a un paso distinto del que le iba a abrir el botón.
   const falta = [
-    !profile.chrome.loggedIn && 'iniciar sesión en claude.ai',
-    !profile.chrome.extension && 'instalar la extensión'
+    !profile.chrome.extension && 'instalar la extensión',
+    !profile.chrome.loggedIn && 'iniciar sesión en claude.ai'
   ].filter((f): f is string => Boolean(f));
   const listo = falta.length === 0;
 
@@ -106,9 +108,21 @@ function ProfileBlock({
             {!profile.exists && <em> (no disponible)</em>}
           </button>
         )}
+        {/* No dice "Iniciar sesión" porque no es sólo eso: el botón lleva el
+            paso que falte —instalar la extensión, iniciar sesión en claude.ai,
+            autorizar el CLI— y recién el último es el login. Prometiendo sólo
+            el login, los dos primeros parecían un desvío en vez del trámite. */}
         {!profile.authenticated && (
-          <button className="link" onClick={() => onLogin(profile.id)}>
-            Iniciar sesión
+          <button
+            className="link"
+            title={
+              falta.length > 0
+                ? `Configurar "${profile.name}". Falta: ${falta.join(' y ')}, y autorizar el CLI.`
+                : `Configurar "${profile.name}". Sólo falta autorizar el CLI.`
+            }
+            onClick={() => onLogin(profile.id)}
+          >
+            Configurar Claude
           </button>
         )}
         {/* Sin sesión iniciada no hay nada que hacer en el navegador: la
@@ -137,7 +151,13 @@ function ProfileBlock({
       {!listo && profile.authenticated && (
         <p className="chrome-falta">Para la extensión falta: {falta.join(' y ')}. Tocá “Chrome”.</p>
       )}
-      {!profile.authenticated && <p className="chrome-falta">Iniciá sesión para poder usar esta cuenta.</p>}
+      {!profile.authenticated && (
+        <p className="chrome-falta">
+          {falta.length > 0
+            ? `Tocá “Configurar Claude”: primero hay que ${falta.join(', y después ')} en el Chrome de esta cuenta.`
+            : 'Tocá “Configurar Claude” para autorizar el CLI y poder usar esta cuenta.'}
+        </p>
+      )}
       <Usage usage={profile.usage} />
     </li>
   );

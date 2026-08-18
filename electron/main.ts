@@ -2,9 +2,9 @@ import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ensureHostScript } from './chrome-host';
-import { chromeStatus, openChromeForProfile } from './chrome-launch';
+import { chromeStatus, closeChromeForProfile, openChromeForProfile, setupBrowserDone } from './chrome-launch';
 import { isLoggedIn } from './credentials';
-import { cancelLogin, startLogin, submitCode } from './login';
+import { cancelLogin, loginPending, startLogin, submitCode } from './login';
 import { markOnboardingDone } from './onboarding';
 import {
   createProfile,
@@ -21,9 +21,10 @@ import {
 } from './profiles';
 import { countCompactions, deleteSession, listSessions } from './sessions';
 import { openTerminal } from './terminal';
+import { tokensFor } from './tokens';
 import { readTranscript } from './transcript';
 import { readUsage } from './usage';
-import type { Profile, Result } from '../shared/types';
+import type { Profile, ProfileWithStatus, Result } from '../shared/types';
 
 /** Envuelve un handler para que el renderer nunca reciba una excepción cruda. */
 function handle<T>(channel: string, fn: (...args: any[]) => Promise<T>) {
@@ -70,7 +71,7 @@ async function requireLogin(profile: Profile): Promise<void> {
   if (isLoggedIn(credenciales)) return;
 
   throw new Error(
-    `La cuenta "${profile.name}" no tiene la sesión iniciada. Hacelo desde acá con "Iniciar sesión": ` +
+    `La cuenta "${profile.name}" no tiene la sesión iniciada. Hacelo desde acá con "Configurar Claude": ` +
       'si dejás que te la pida la terminal, el login se abre en tu Chrome de siempre y la extensión de esta cuenta queda sin sesión.'
   );
 }
@@ -103,8 +104,42 @@ async function openTerminalAs(cwd: string, command: string, profile: Profile) {
   await openTerminal(cwd, command, profile.configDir, label);
 }
 
+/**
+ * Cierra el Chrome que la app abrió para configurar una cuenta, apenas esa
+ * cuenta ya no lo necesita abierto.
+ *
+ * Esa ventana se abre para dos trámites —instalar la extensión e iniciar sesión
+ * en claude.ai— y una vez hechos no tiene nada más que mostrar. Dejándola
+ * abierta, el usuario termina con un Chrome de más por cada cuenta que agrega y
+ * sin saber si todavía hace falta.
+ *
+ * Sólo mientras la cuenta se está configurando: `authenticated` significa que
+ * el login del CLI ya se completó, y de ahí en adelante ese navegador es del
+ * usuario —lo abre con el botón "Chrome" para usar la herramienta de navegador—
+ * así que cerrárselo sería sacarle la ventana de las manos.
+ *
+ * Y nunca con un login en curso: la autorización se está mostrando JUSTO en esa
+ * ventana, y este chequeo corre en cada refresco, incluso cuando el usuario
+ * vuelve a la app a pegar el código.
+ */
+async function closeSetupBrowsers(profiles: ProfileWithStatus[]): Promise<void> {
+  await Promise.all(
+    profiles.map(async (p) => {
+      if (!setupBrowserDone(p, loginPending(p.id))) return;
+      await closeChromeForProfile(p.id).catch(() => {});
+    })
+  );
+}
+
 function registerHandlers() {
-  handle('profiles:list', () => listProfiles());
+  // La lista se refresca sola cada vez que la ventana toma el foco, así que es
+  // también el momento en que la app se entera de que el usuario ya terminó lo
+  // suyo en el navegador de una cuenta.
+  handle('profiles:list', async () => {
+    const lista = await listProfiles();
+    await closeSetupBrowsers(lista.profiles).catch(() => {});
+    return lista;
+  });
   handle('profiles:create', (name: string) => createProfile(name));
   // Cambiar de cuenta no toca el puente de Chrome: `claude` lo re-registra al
   // arrancar, apuntando al `.bat` de la carpeta con la que corre. Lo que importa
@@ -128,20 +163,34 @@ function registerHandlers() {
   handle('profiles:login', async (id: string) => {
     const profile = await getProfile(id);
 
-    // El navegador de la cuenta tiene que estar logueado ANTES de esto.
+    // El navegador de la cuenta tiene que tener la extensión y la sesión ANTES
+    // de esto, y en ese orden.
     //
-    // `claude auth login` abre su propia pestaña en el navegador por defecto y
-    // no se le puede impedir: si el usuario autoriza ahí, la sesión de
-    // claude.ai queda guardada en el Chrome equivocado y el de la cuenta sigue
-    // vacío — que es exactamente por qué la extensión no funcionaba. Con la
-    // sesión ya iniciada acá, la pestaña que abre la app muestra el botón de
-    // autorizar directo, sin pedir login, y la otra queda como ruido inofensivo.
+    // La extensión primero porque es lo que la app no puede hacer por el
+    // usuario y lo que nadie descubre solo: es por perfil, así que un Chrome
+    // recién creado no la tiene por más que el Chrome de siempre sí. Sin ella
+    // la sesión del CLI dice "browser extension is not connected" cuando ya
+    // parecía que todo estaba listo.
+    //
+    // La sesión después, y antes del login del CLI: `claude auth login` abre su
+    // propia pestaña en el navegador por defecto y no se le puede impedir. Si
+    // el usuario autoriza ahí, la sesión de claude.ai queda guardada en el
+    // Chrome equivocado y el de la cuenta sigue vacío — que es exactamente por
+    // qué la extensión no funcionaba. Con la sesión ya iniciada acá, la pestaña
+    // que abre la app muestra el botón de autorizar directo, sin pedir login, y
+    // la otra queda como ruido inofensivo.
+    //
+    // Se abre Chrome en el paso que falte —`nextStepUrl` decide cuál— y se
+    // frena con la explicación de ese paso, uno por vez.
     const estado = await chromeStatus(profile.id, profile.name);
-    if (!estado.loggedIn) {
+    if (!estado.extension || !estado.loggedIn) {
       await openChromeForProfile(profile.id, profile.name).catch(() => {});
       throw new Error(
-        `Primero iniciá sesión en claude.ai dentro del Chrome de "${profile.name}", que se acaba de abrir. ` +
-          'Después volvé y tocá "Iniciar sesión". Si autorizás en tu Chrome de siempre, la sesión queda guardada ahí y la extensión no funciona.'
+        !estado.extension
+          ? `Paso 1: instalá la extensión de Claude en el Chrome de "${profile.name}", que se acaba de abrir en la tienda. ` +
+            'Las extensiones son por perfil, así que va una vez por cada cuenta. Después volvé y tocá "Configurar Claude" otra vez.'
+          : `Paso 2: iniciá sesión en claude.ai dentro del Chrome de "${profile.name}", que se acaba de abrir. ` +
+            'Después volvé y tocá "Configurar Claude". Si autorizás en tu Chrome de siempre, la sesión queda guardada ahí y la extensión no funciona.'
       );
     }
 
@@ -214,6 +263,17 @@ function registerHandlers() {
   handle('sessions:transcript', async (id: string) => {
     const { sharedRoot, session } = await findSession(id);
     return readTranscript(join(sharedRoot, 'projects', session.projectSlug, `${session.id}.jsonl`));
+  });
+  // El consumo de cada sesión. Va aparte de `sessions:list` porque obliga a
+  // leer los transcripts enteros —558 MB en esta máquina, 2,5 s la primera
+  // vez— y la lista tiene que poder aparecer antes que los números. Después
+  // sólo se relee el archivo de la sesión que está corriendo. Ver `tokens.ts`.
+  handle('sessions:tokens', async () => {
+    const sharedRoot = await getSharedRoot();
+    const sessions = await listSessions(sharedRoot);
+    return tokensFor(
+      sessions.map((s) => ({ id: s.id, path: join(sharedRoot, 'projects', s.projectSlug, `${s.id}.jsonl`) }))
+    );
   });
   handle('sessions:delete', async (id: string) => {
     const { sharedRoot, session } = await findSession(id);

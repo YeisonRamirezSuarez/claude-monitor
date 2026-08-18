@@ -16,6 +16,20 @@ export function relativeDate(ms: number): string {
   return 'hace un momento';
 }
 
+/** Los tokens llegan a las centenas de millones: escritos enteros no se leen.
+ *  Lo compacta `Intl` —"1,2 M", "345 mil"— en castellano y sin tabla propia. */
+const COMPACTO = new Intl.NumberFormat('es', { notation: 'compact', maximumFractionDigits: 1 });
+export const formatTokens = (n: number): string => COMPACTO.format(n);
+
+/** Con separadores de miles, para el detalle donde el número exacto importa. */
+const EXACTO = new Intl.NumberFormat('es');
+export const formatExact = (n: number): string => EXACTO.format(n);
+
+/** Nombre corto de un proyecto: la última carpeta de su ruta. */
+export function projectName(cwd: string): string {
+  return cwd.split(/[\\/]/).filter(Boolean).pop() ?? '';
+}
+
 /** Las sesiones recién creadas pesan menos de 1 KB: redondearlas a "0 KB" se lee como un error. */
 export function formatSize(bytes: number): string {
   return bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024)} KB`;

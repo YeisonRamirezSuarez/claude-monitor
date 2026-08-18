@@ -61,6 +61,24 @@ export type SessionMeta = ParsedSession & {
 
 export type ChromeStatus = { profileExists: boolean; extension: boolean; loggedIn: boolean };
 
+/**
+ * Lo que consumió una sesión, sacado de su transcript.
+ *
+ * Los cuatro números van separados a propósito: la lectura de caché suele ser
+ * el grueso del volumen y es la más barata de todas, así que sumarla con la
+ * entrada normal daría una cifra que asusta y no significa nada.
+ */
+export type SessionTokens = {
+  input: number;
+  output: number;
+  cacheCreate: number;
+  cacheRead: number;
+  /** Respuestas del modelo, ya sin contar las repetidas. */
+  requests: number;
+  /** Los modelos que atendieron esta sesión. */
+  models: string[];
+};
+
 export type ResumeResult = { compactions: number };
 
 /** Un turno de la conversación, ya sin la maquinaria de herramientas. */
@@ -104,6 +122,10 @@ export type ClaudeMonitorApi = {
    *  Sin `cwd` pide la carpeta con el selector nativo. */
   newSession: (cwd?: string) => Promise<Result<null>>;
   deleteSession: (id: string) => Promise<Result<null>>;
+  /** El consumo de cada sesión, por id. Se pide aparte de `listSessions`
+   *  porque hay que leer los transcripts enteros: la lista tiene que poder
+   *  aparecer antes de que estén los números. */
+  sessionTokens: () => Promise<Result<Record<string, SessionTokens>>>;
   /** La conversación completa de una sesión, leída del `.jsonl`. */
   readTranscript: (id: string) => Promise<Result<Transcript>>;
   /** Abre Chrome con el perfil de esta cuenta, que es lo que necesita la
@@ -115,7 +137,13 @@ export type ClaudeMonitorApi = {
 
 export type LoginStart = { url: string; needsExtension: boolean };
 
-export type ChromeOpenResult = { firstRun: boolean; needsExtension: boolean; pendingRename: boolean };
+export type ChromeOpenResult = {
+  firstRun: boolean;
+  needsExtension: boolean;
+  /** Al Chrome de la cuenta le falta la sesión de claude.ai. */
+  needsLogin: boolean;
+  pendingRename: boolean;
+};
 
 declare global {
   interface Window {

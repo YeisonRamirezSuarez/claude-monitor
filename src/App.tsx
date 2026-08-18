@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Sidebar from './Sidebar';
 import TranscriptView from './Transcript';
 import SessionList from './SessionList';
-import type { ProfileList, Result, SessionMeta } from '../shared/types';
+import type { ProfileList, Result, SessionMeta, SessionTokens } from '../shared/types';
 
 /** Desempaqueta un Result: devuelve los datos, o setea el error y devuelve null. */
 function unwrap<T>(result: Result<T>, setError: (e: string) => void): T | null {
@@ -15,6 +15,11 @@ export default function App() {
   const [profileList, setProfileList] = useState<ProfileList | null>(null);
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
+  // El consumo por sesión. Se pide aparte y sin bloquear: obliga a leer los
+  // transcripts enteros —medio giga en esta máquina— y la lista tiene que
+  // aparecer antes. Mientras tanto el mapa está vacío y la interfaz lo dice.
+  const [tokens, setTokens] = useState<Record<string, SessionTokens>>({});
+  const [tokensLoading, setTokensLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [openId, setOpenId] = useState<string | null>(null);
@@ -47,6 +52,14 @@ export default function App() {
       setError(e instanceof Error ? e.message : String(e));
     }
     setLoading(false);
+
+    // Después de pintar la lista, y sin `await` que la demore. El primer
+    // recorrido tarda segundos; los siguientes releen sólo lo que cambió.
+    setTokensLoading(true);
+    const consumo = await window.claudeMonitor.sessionTokens().catch(() => null);
+    if (mine !== runId.current) return;
+    if (consumo?.ok) setTokens(consumo.data);
+    setTokensLoading(false);
   }, []);
 
   useEffect(() => {
@@ -78,22 +91,25 @@ export default function App() {
     }
   };
 
-  // Abre el Chrome de una cuenta, siempre en claude.ai. Hay dos pasos que la
-  // app no puede hacer por el usuario —iniciar sesión con esa cuenta e instalar
-  // la extensión en ese perfil— y se explican cuando el perfil es nuevo. El
-  // aviso no puede ser la única señal: que el perfil ya exista no significa que
-  // esté logueado, así que la página abre igual y ahí se ve.
+  // Abre el Chrome de una cuenta en el paso que le falte: primero la extensión,
+  // después la sesión de claude.ai. Son los dos pasos que la app no puede hacer
+  // por el usuario, y el aviso dice cuál es el que quedó abierto — sin eso, la
+  // pestaña aparece sin explicar qué hay que hacer ahí.
   const openChrome = async (id: string) => {
     setError('');
     setNotice('');
     const result = await window.claudeMonitor.openChrome(id);
     if (!result.ok) return setError(result.error);
+    const { needsExtension, needsLogin } = result.data;
     setNotice(
-      result.data.needsExtension
-        ? 'Se abrió el Chrome de esta cuenta en la tienda: instalá ahí la extensión de Claude. Las extensiones son por ' +
-            'perfil, así que va una vez por cada cuenta — sin ella, la sesión dice "browser extension is not connected".'
-        : 'Chrome se abrió con el perfil de esta cuenta, en claude.ai. Fijate qué cuenta aparece logueada: ' +
-            'la extensión sólo conecta si es la misma con la que abrís la sesión.'
+      needsExtension
+        ? 'Paso 1: se abrió el Chrome de esta cuenta en la tienda. Instalá ahí la extensión de Claude. Las extensiones ' +
+            'son por perfil, así que va una vez por cada cuenta — sin ella, la sesión dice "browser extension is not connected".'
+        : needsLogin
+          ? 'Paso 2: se abrió claude.ai en el Chrome de esta cuenta. Iniciá sesión ahí con ESTA cuenta y volvé acá: ' +
+              'esa ventana se cierra sola cuando la app ve que ya está lista.'
+          : 'Chrome se abrió con el perfil de esta cuenta, en claude.ai. Fijate qué cuenta aparece logueada: ' +
+              'la extensión sólo conecta si es la misma con la que abrís la sesión.'
     );
   };
 
@@ -179,12 +195,17 @@ export default function App() {
           // siempre, y si se autoriza ahí la sesión de claude.ai queda guardada
           // en el navegador equivocado. Con el de la cuenta ya logueado, la
           // pestaña correcta muestra el botón de autorizar directo.
+          //
+          // Y dentro del navegador, la extensión antes que el login: es por
+          // perfil, un Chrome recién creado nunca la tiene, y es el paso que
+          // nadie descubre solo. `openChrome` abre la tienda directamente.
           const abierto = await window.claudeMonitor.openChrome(created.data.id);
           if (!abierto.ok) return setError(abierto.error);
           setNotice(
-            `Cuenta "${name}" creada. Se abrió su Chrome propio: ` +
-              '1) iniciá sesión en claude.ai ahí, 2) instalá la extensión de Claude en esa ventana, ' +
-              '3) volvé acá y tocá "Iniciar sesión". Usá SIEMPRE esa ventana y no tu Chrome de siempre.'
+            `Cuenta "${name}" creada. Se abrió su Chrome propio en la tienda: ` +
+              '1) instalá ahí la extensión de Claude, 2) iniciá sesión en claude.ai en esa misma ventana, ' +
+              '3) volvé acá y tocá "Configurar Claude". Usá SIEMPRE esa ventana y no tu Chrome de siempre: ' +
+              'cuando los dos primeros pasos estén hechos se cierra sola.'
           );
         }}
         onLogin={(id) => startLogin(id)}
@@ -234,6 +255,8 @@ export default function App() {
         ) : (
           <SessionList
             sessions={selectedSlug ? sessions.filter((s) => s.projectSlug === selectedSlug) : sessions}
+            tokens={tokens}
+            tokensLoading={tokensLoading}
             emptyHint={emptyHint}
             activeProfileName={activeProfile?.name ?? ''}
             canResume={Boolean(activeProfile?.authenticated)}

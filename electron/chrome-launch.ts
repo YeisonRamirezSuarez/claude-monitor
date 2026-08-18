@@ -327,15 +327,19 @@ async function observeExtension(profileId: string): Promise<Observacion> {
 /**
  * Qué abrir para esta cuenta, según lo que le falte.
  *
- * Una sola pestaña por vez, y en orden: primero la sesión de claude.ai, después
- * la extensión. Abrir las dos juntas dejaba pestañas encimadas y no se entendía
- * cuál atender primero — y encima la extensión no sirve de nada hasta que la
- * sesión exista.
+ * Una sola pestaña por vez, y en orden: primero la extensión, después la sesión
+ * de claude.ai. Abrir las dos juntas dejaba pestañas encimadas y no se entendía
+ * cuál atender primero.
+ *
+ * La extensión va primero porque es el paso que el usuario no descubre solo: se
+ * instala una vez por perfil, no depende de tener sesión —la tienda no pide
+ * cuenta de Claude para instalarla— y con ella puesta antes del login, apenas
+ * la sesión de claude.ai existe la extensión ya conecta. Al revés el usuario
+ * terminaba logueado, creyendo que había terminado, y la sesión del CLI decía
+ * "browser extension is not connected" sin explicar qué faltaba.
  */
 export function nextStepUrl(status: ChromeStatus): string {
-  if (!status.loggedIn) return CLAUDE_URL;
-  if (!status.extension) return STORE_URL;
-  return CLAUDE_URL;
+  return status.extension ? CLAUDE_URL : STORE_URL;
 }
 
 /** Cómo se va a ver el navegador de esta cuenta. */
@@ -357,20 +361,82 @@ export function withProfileName(prefs: string, name: string): string | null {
   return JSON.stringify({ ...o, profile: { ...profile, name } });
 }
 
-/** Si el navegador de ESTA cuenta está corriendo. Con Chrome abierto no se le
- *  pueden reescribir las preferencias: las tiene en memoria y las vuelca al
- *  cerrar, pisando lo que hayamos puesto. Se mira sólo su instancia: el Chrome
- *  de siempre del usuario no tiene nada que ver. */
-async function instanceRunning(profileId: string): Promise<boolean> {
-  const dir = browserDir(profileId);
+/**
+ * Los procesos de Chrome que corren sobre la carpeta de ESTA cuenta.
+ *
+ * Se mira sólo su instancia: el Chrome de siempre del usuario no tiene nada que
+ * ver, y confundirlos significaría cerrarle las ventanas al usuario.
+ *
+ * Chrome levanta muchos procesos por ventana y todos heredan la línea de
+ * comando con el `--user-data-dir`. El del navegador —el que manda, el que
+ * cierra a los demás— es el único sin `--type=`. `soloRaiz` deja ese.
+ *
+ * La comparación va en minúsculas porque así se compara todo lo demás en
+ * Windows, y `.Contains()` de .NET distingue mayúsculas. Se usa `.Contains()`
+ * y no `-like` a propósito: `-like` interpretaría un `[` del nombre de usuario
+ * como comodín y no encontraría nada.
+ */
+async function profilePids(profileId: string, soloRaiz = false): Promise<number[]> {
+  const dir = browserDir(profileId).toLowerCase().replace(/'/g, "''");
+  const raiz = soloRaiz ? " -and -not $_.CommandLine.Contains('--type=')" : '';
   const stdout = await run('powershell', [
     '-NoProfile',
     '-Command',
-    "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | ForEach-Object { $_.CommandLine }"
+    `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.ToLower().Contains('${dir}')${raiz} } | ForEach-Object { $_.ProcessId }`
   ])
     .then((r) => r.stdout)
     .catch(() => '');
-  return stdout.toLowerCase().includes(dir.toLowerCase());
+  return stdout
+    .split(/\s+/)
+    .map(Number)
+    .filter((n) => Number.isInteger(n) && n > 0);
+}
+
+/** Si el navegador de ESTA cuenta está corriendo. Con Chrome abierto no se le
+ *  pueden reescribir las preferencias: las tiene en memoria y las vuelca al
+ *  cerrar, pisando lo que hayamos puesto. */
+async function instanceRunning(profileId: string): Promise<boolean> {
+  return (await profilePids(profileId)).length > 0;
+}
+
+/**
+ * Si el navegador que la app abrió para configurar una cuenta ya cumplió con lo
+ * suyo y se puede cerrar.
+ *
+ * `authenticated` —el login del CLI hecho— es el corte: de ahí en adelante ese
+ * navegador es del usuario, que lo abre a mano para usar la herramienta de
+ * navegador, y cerrárselo sería sacarle la ventana de las manos.
+ *
+ * `loginEnCurso` protege el caso peor: la autorización se muestra JUSTO en esa
+ * ventana y este chequeo corre en cada refresco, incluido el que dispara volver
+ * a la app a pegar el código.
+ */
+export function setupBrowserDone(
+  cuenta: { authenticated: boolean; chrome: ChromeStatus },
+  loginEnCurso: boolean
+): boolean {
+  return !cuenta.authenticated && !loginEnCurso && cuenta.chrome.extension && cuenta.chrome.loggedIn;
+}
+
+/**
+ * Cierra el navegador de esta cuenta. Devuelve si había algo que cerrar.
+ *
+ * Se le pide a la ventana que se cierre, no se mata el proceso: Chrome vuelca
+ * al salir lo que tiene en memoria —cookies incluidas— y matarlo además le hace
+ * mostrar "no se cerró correctamente" la próxima vez.
+ */
+export async function closeChromeForProfile(profileId: string): Promise<boolean> {
+  const pids = await profilePids(profileId, true);
+  if (pids.length === 0) return false;
+  // ponytail: cierra la ventana principal de esa instancia; si la cuenta tiene
+  // varias ventanas abiertas quedan las otras. Con `$_.CloseMainWindow()` en un
+  // bucle hasta que no queden, si alguna vez molesta.
+  await run('powershell', [
+    '-NoProfile',
+    '-Command',
+    `Get-Process -Id ${pids.join(',')} -ErrorAction SilentlyContinue | ForEach-Object { $_.CloseMainWindow() | Out-Null }`
+  ]).catch(() => {});
+  return true;
 }
 
 /**
@@ -412,7 +478,7 @@ export async function openChromeForProfile(
   profileId: string,
   accountName: string,
   url?: string
-): Promise<{ firstRun: boolean; needsExtension: boolean; pendingRename: boolean }> {
+): Promise<{ firstRun: boolean; needsExtension: boolean; needsLogin: boolean; pendingRename: boolean }> {
   const chrome = await findChrome();
   if (!chrome) {
     throw new Error('No se encontró chrome.exe. ¿Está instalado Google Chrome?');
@@ -438,5 +504,5 @@ export async function openChromeForProfile(
     child.once('error', reject);
   });
 
-  return { firstRun, needsExtension: !status.extension, pendingRename };
+  return { firstRun, needsExtension: !status.extension, needsLogin: !status.loggedIn, pendingRename };
 }

@@ -8,6 +8,7 @@ import {
   EXTENSION_ID,
   pruneStalePairing,
   declaresExtension,
+  setupBrowserDone,
   displayName,
   hasSessionCookie,
   nextStepUrl,
@@ -105,16 +106,40 @@ describe('hasSessionCookie', () => {
   });
 });
 
+describe('setupBrowserDone', () => {
+  const cuenta = (authenticated: boolean, extension: boolean, loggedIn: boolean) => ({
+    authenticated,
+    chrome: { profileExists: true, extension, loggedIn }
+  });
+
+  it('con la extensión y la sesión listas, la ventana de configuración ya no hace falta', () => {
+    expect(setupBrowserDone(cuenta(false, true, true), false)).toBe(true);
+  });
+
+  it('con un paso a medias no se cierra: es la ventana donde hay que hacerlo', () => {
+    expect(setupBrowserDone(cuenta(false, false, true), false)).toBe(false);
+    expect(setupBrowserDone(cuenta(false, true, false), false)).toBe(false);
+  });
+
+  it('con el login del CLI hecho la ventana es del usuario, no de la app', () => {
+    expect(setupBrowserDone(cuenta(true, true, true), false)).toBe(false);
+  });
+
+  it('nunca durante la autorización: se está mostrando en esa misma ventana', () => {
+    expect(setupBrowserDone(cuenta(false, true, true), true)).toBe(false);
+  });
+});
+
 describe('nextStepUrl', () => {
   const estado = (loggedIn: boolean, extension: boolean) => ({ profileExists: true, loggedIn, extension });
 
-  it('sin sesión manda a claude.ai: la extensión no sirve hasta que haya sesión', () => {
-    expect(nextStepUrl(estado(false, false))).toBe('https://claude.ai');
-    expect(nextStepUrl(estado(false, true))).toBe('https://claude.ai');
+  it('sin extensión manda a la tienda, aunque falte todo lo demás: es el primer paso', () => {
+    expect(nextStepUrl(estado(false, false))).toContain('chromewebstore.google.com');
+    expect(nextStepUrl(estado(true, false))).toContain('chromewebstore.google.com');
   });
 
-  it('con sesión y sin extensión manda a la tienda', () => {
-    expect(nextStepUrl(estado(true, false))).toContain('chromewebstore.google.com');
+  it('con la extensión puesta y sin sesión manda a claude.ai', () => {
+    expect(nextStepUrl(estado(false, true))).toBe('https://claude.ai');
   });
 
   it('con todo listo abre claude.ai, para ver con qué cuenta quedó', () => {

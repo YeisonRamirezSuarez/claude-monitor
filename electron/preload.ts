@@ -14,6 +14,7 @@ const api: ClaudeMonitorApi = {
   newSession: (cwd) => ipcRenderer.invoke('sessions:new', cwd),
   deleteSession: (id) => ipcRenderer.invoke('sessions:delete', id),
   readTranscript: (id) => ipcRenderer.invoke('sessions:transcript', id),
+  sessionTokens: () => ipcRenderer.invoke('sessions:tokens'),
   openChrome: (id) => ipcRenderer.invoke('chrome:open', id)
 };
 
