@@ -3,7 +3,8 @@ import { join } from 'node:path';
 import type { Profile } from '../shared/types';
 
 /**
- * Hace que toda sesión arranque con los mismos plugins, sin importar la cuenta.
+ * Hace que toda sesión arranque con los mismos plugins y skills, sin importar
+ * la cuenta.
  *
  * Los plugins se enganchan en `<configDir>/settings.json` (`enabledPlugins` y
  * `extraKnownMarketplaces`) y se descargan en `<configDir>/plugins/`. Como cada
@@ -11,8 +12,8 @@ import type { Profile } from '../shared/types';
  * `settings.json` casi vacío: caveman, ponytail y el resto simplemente no
  * existen ahí, y la sesión sale pelada.
  *
- * Acá se hacen las dos mitades. El `plugins/` de cada cuenta se apunta al del
- * pozo con un junction —son 27 MB de caché ya descargada, y clonar los
+ * Acá se hacen las dos mitades. Las carpetas de `SHARED_DIRS` se apuntan a las
+ * del pozo con un junction —son 27 MB de caché ya descargada, y clonar los
  * marketplaces de nuevo por cuenta es lento y depende de la red justo al abrir
  * una sesión— y las claves de `settings.json` que definen qué corre se copian
  * del pozo.
@@ -25,6 +26,11 @@ import type { Profile } from '../shared/types';
  *  no está en el pozo, se saca de la cuenta, así apagar un plugin en el pozo lo
  *  apaga en todos lados en vez de dejarlo colgado en una cuenta cualquiera. */
 export const PLUGIN_KEYS = ['enabledPlugins', 'extraKnownMarketplaces', 'statusLine', 'hooks'] as const;
+
+/** Las carpetas que el pozo presta enteras. `plugins/` trae los marketplaces
+ *  ya clonados; `skills/`, `agents/` y `commands/` son lo que el usuario
+ *  escribe a mano y hasta ahora había que copiar y pegar por cuenta. */
+export const SHARED_DIRS = ['plugins', 'skills', 'agents', 'commands'] as const;
 
 type Settings = Record<string, unknown>;
 
@@ -57,11 +63,11 @@ export function mergeSettings(poolRaw: string, ownRaw: string): string | null {
   return text === ownRaw ? null : text;
 }
 
-/** Apunta el `plugins/` de la cuenta al del pozo. Lo que la cuenta tuviera
+/** Apunta una carpeta de la cuenta a la del pozo. Lo que la cuenta tuviera
  *  propio no se borra: se aparta con fecha, igual que en `shared-projects.ts`. */
-async function linkPlugins(configDir: string, sharedRoot: string): Promise<void> {
-  const link = join(configDir, 'plugins');
-  const target = join(sharedRoot, 'plugins');
+async function linkShared(configDir: string, sharedRoot: string, name: string): Promise<void> {
+  const link = join(configDir, name);
+  const target = join(sharedRoot, name);
   await mkdir(target, { recursive: true });
 
   const current = await lstat(link).catch(() => null);
@@ -80,7 +86,7 @@ async function linkPlugins(configDir: string, sharedRoot: string): Promise<void>
 export async function syncPlugins(configDir: string, sharedRoot: string): Promise<void> {
   if (configDir === sharedRoot) return; // la cuenta dueña del pozo
 
-  await linkPlugins(configDir, sharedRoot);
+  for (const name of SHARED_DIRS) await linkShared(configDir, sharedRoot, name);
 
   const poolRaw = await readFile(join(sharedRoot, 'settings.json'), 'utf8').catch(() => null);
   if (poolRaw === null) return; // sin pozo no hay nada que copiar

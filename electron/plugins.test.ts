@@ -75,6 +75,27 @@ describe('syncPlugins', () => {
     }
   });
 
+  it('las skills del pozo tambien se ven desde la cuenta', async () => {
+    const pozo = await tmp('cm-pozo-');
+    const cuenta = await tmp('cm-cuenta-');
+    try {
+      await mkdir(join(pozo, 'skills', 'angular-dev'), { recursive: true });
+      await writeFile(join(pozo, 'skills', 'angular-dev', 'SKILL.md'), 'ugh');
+
+      await syncPlugins(cuenta, pozo);
+
+      expect((await lstat(join(cuenta, 'skills'))).isSymbolicLink()).toBe(true);
+      expect(await readFile(join(cuenta, 'skills', 'angular-dev', 'SKILL.md'), 'utf8')).toBe('ugh');
+      for (const name of ['agents', 'commands']) {
+        expect((await lstat(join(cuenta, name))).isSymbolicLink()).toBe(true);
+      }
+    } finally {
+      await unlinkShared(cuenta);
+      await rm(pozo, { recursive: true, force: true });
+      await rm(cuenta, { recursive: true, force: true });
+    }
+  });
+
   it('no toca la cuenta que ES el pozo', async () => {
     const pozo = await tmp('cm-pozo-');
     try {
