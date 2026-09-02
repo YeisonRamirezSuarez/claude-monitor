@@ -106,6 +106,42 @@ async function fetchLive(configDir: string): Promise<Live | null> {
 }
 
 /**
+ * ¿La caché que hay en esta carpeta es de esta cuenta?
+ *
+ * `cachedUsageUtilization` la escribe el CLI con el `accountUuid` del token que
+ * tenía en ese momento. Si después se autorizó otra cuenta sobre la misma
+ * carpeta —o la carpeta se copió para arrancar una cuenta nueva— la caché
+ * queda ahí, de la cuenta anterior, y sin este chequeo se muestra como si
+ * fuera del dueño actual: visto en la cuenta de trabajo mostrando el consumo
+ * de la cuenta personal.
+ *
+ * Sin `accountUuid` de alguno de los dos lados no hay con qué desmentirla, y
+ * se acepta: un CLI viejo que no lo escribía no es motivo para dejar a la
+ * cuenta sin datos.
+ */
+export function cacheDeLaCuenta(account: unknown, cached: unknown): boolean {
+  const suyo = (account as { accountUuid?: unknown } | undefined)?.accountUuid;
+  const deLaCache = (cached as { accountUuid?: unknown } | undefined)?.accountUuid;
+  if (typeof suyo !== 'string' || typeof deLaCache !== 'string') return true;
+  return suyo === deLaCache;
+}
+
+/**
+ * Los límites que todavía significan algo: los que aún no se restablecieron.
+ *
+ * Un porcentaje es de una ventana de tiempo. Pasado su `resets_at` la ventana
+ * arrancó de cero y ese número dejó de describir nada — la caché de una cuenta
+ * que hace una semana no se usa mostraba "56%" sobre una sesión de 5 h que se
+ * reinició seis veces desde entonces, con un "se restablece hace 7 días"
+ * abajo. Mejor no decir nada que decir eso.
+ *
+ * Los que no traen fecha se quedan: no se puede probar que vencieron.
+ */
+export function vigentes(limits: UsageLimit[], now = Date.now()): UsageLimit[] {
+  return limits.filter((l) => !l.resetsAt || Date.parse(l.resetsAt) > now);
+}
+
+/**
  * Consumo de una cuenta: en vivo si se puede, con la caché del CLI como
  * respaldo. `live` distingue las dos, porque un número viejo presentado como
  * actual es peor que no mostrarlo.
@@ -118,7 +154,9 @@ export async function readUsage(configDir: string): Promise<AccountUsage | null>
   const plan = typeof account?.organizationType === 'string' ? account.organizationType : '';
 
   const live = await fetchLive(configDir);
-  const limits = live ? live.limits : toLimits(cached?.utilization);
+  // La caché sólo entra si es de esta cuenta y si lo que dice sigue en pie.
+  const deRespaldo = cacheDeLaCuenta(account, cached) ? vigentes(toLimits(cached?.utilization)) : [];
+  const limits = live ? live.limits : deRespaldo;
   const email = live?.email || (typeof account?.emailAddress === 'string' ? account.emailAddress : '');
   if (!limits.length && !email) return null;
 
