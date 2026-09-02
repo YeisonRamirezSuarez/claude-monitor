@@ -9,12 +9,15 @@
 // esta, y despues se copian los .exe a `release/` del proyecto: copiar un
 // archivo suelto si funciona, lo que falla es renombrar directorios.
 import { spawnSync } from 'node:child_process';
-import { readdirSync, mkdirSync, copyFileSync, rmSync } from 'node:fs';
+import { readdirSync, mkdirSync, copyFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const tmp = join(tmpdir(), 'claude-monitor-release');
-const out = join(process.cwd(), 'release');
+// Cada version en su carpeta: si todas caen sueltas en `release/`, la anterior
+// queda mezclada con la nueva y no se sabe cual instalar.
+const { version } = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8'));
+const out = join(process.cwd(), 'release', `Claude Monitor ${version}`);
 
 // Limpiar el temporal para no copiar exe viejos de builds anteriores.
 rmSync(tmp, { recursive: true, force: true });

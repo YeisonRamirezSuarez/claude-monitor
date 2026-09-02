@@ -2,3 +2,5 @@ node_modules/
 out/
 dist/
 release/
+debug.log
+*.timestamp-*.mjs
