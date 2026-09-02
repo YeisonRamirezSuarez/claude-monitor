@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Sidebar from './Sidebar';
 import TranscriptView from './Transcript';
 import SessionList from './SessionList';
+import LogsPanel from './LogsPanel';
 import type { ProfileList, Result, SessionMeta, SessionTokens } from '../shared/types';
 
 /** Desempaqueta un Result: devuelve los datos, o setea el error y devuelve null. */
@@ -27,6 +28,11 @@ export default function App() {
   // El login en curso: el CLI ya abrió la autorización y espera el código.
   const [pendingLogin, setPendingLogin] = useState<{ id: string; name: string; needsExtension: boolean } | null>(null);
   const [loginCode, setLoginCode] = useState('');
+  const [showLogs, setShowLogs] = useState(false);
+  // Si esta app tiene el protocolo `claude://`. Decide si el login de Google de
+  // Desktop se hace adentro de la ventana de cada cuenta o se va al navegador.
+  const [protocoloNuestro, setProtocoloNuestro] = useState<boolean | null>(null);
+  const [empaquetada, setEmpaquetada] = useState(true);
 
   // Dos refresh pueden estar en vuelo a la vez (una acción y el listener de
   // focus, o dos clics rápidos). Sólo el último iniciado puede escribir estado:
@@ -63,6 +69,14 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    window.claudeMonitor.protocolStatus().then((r) => {
+      if (!r.ok) return;
+      setProtocoloNuestro(r.data.nuestro);
+      setEmpaquetada(r.data.empaquetada ?? true);
+    });
+  }, []);
+
+  useEffect(() => {
     refresh();
     // El login ocurre en una terminal externa: al volver el foco, re-verificar.
     window.addEventListener('focus', refresh);
@@ -83,12 +97,14 @@ export default function App() {
     setNotice('');
     const result = await window.claudeMonitor.resumeSession(id);
     if (!result.ok) return setError(result.error);
-    if (result.data.compactions > 0) {
-      setNotice(
-        `Esta sesión fue compactada ${result.data.compactions} ${result.data.compactions === 1 ? 'vez' : 'veces'}. ` +
+    const compactada =
+      result.data.compactions > 0
+        ? `Esta sesión fue compactada ${result.data.compactions} ${result.data.compactions === 1 ? 'vez' : 'veces'}. ` +
           'Claude Code reanuda desde el último resumen, así que en la terminal no vas a ver los mensajes anteriores a esa compactación: están resumidos, no perdidos.'
-      );
-    }
+        : '';
+    // El relevo primero: cambiar de cuenta afecta a quién le sale el gasto, y
+    // eso importa más que el detalle de la compactación.
+    setNotice([result.data.relevo, compactada].filter(Boolean).join(' '));
   };
 
   // Abre el Chrome de una cuenta en el paso que le falte: primero la extensión,
@@ -110,6 +126,115 @@ export default function App() {
               'esa ventana se cierra sola cuando la app ve que ya está lista.'
           : 'Chrome se abrió con el perfil de esta cuenta, en claude.ai. Fijate qué cuenta aparece logueada: ' +
               'la extensión sólo conecta si es la misma con la que abrís la sesión.'
+    );
+  };
+
+  // Toma o devuelve el protocolo `claude://`.
+  //
+  // Sirve para UNA cosa: el login con Google de una ventana de Desktop. Ese
+  // login sale al navegador del sistema y la respuesta vuelve como un enlace
+  // `claude://` que resuelve Windows, no el navegador; con el protocolo
+  // nuestro llega acá y se lo reenvía a la ventana que lo estaba esperando, en
+  // vez de aterrizar en el Desktop de siempre y guardar la cuenta donde no era.
+  //
+  // "Reanudar en Desktop" y "Nueva en Desktop" NO dependen de esto: esos
+  // enlaces se los pasa la app al ejecutable de Desktop como argumento, sin
+  // que Windows tenga que resolver nada. Ver `desktop.ts` y `protocol.ts`.
+  const cambiarProtocolo = async (tomar: boolean) => {
+    setError('');
+    setNotice('');
+    const result = await (tomar ? window.claudeMonitor.claimProtocol() : window.claudeMonitor.releaseProtocol());
+    if (!result.ok) return setError(result.error);
+    setProtocoloNuestro(result.data.nuestro);
+    setNotice(
+      result.data.nuestro
+        ? 'Listo: la respuesta del login con Google va a volver a la ventana de Desktop que la pidió, en vez de al ' +
+            'Desktop de siempre. Reanudar y abrir carpetas en Desktop andan igual, con protocolo o sin él.'
+        : 'Se devolvió el protocolo claude://. Si entrás a Desktop sólo con correo, no te hace falta. Con Google, la ' +
+            'cuenta puede terminar guardada en otra ventana. La app lo vuelve a tomar sola en el próximo arranque.'
+    );
+  };
+
+  // Abre el Claude Desktop de una cuenta. El aviso sólo aparece la primera vez,
+  // que es cuando la ventana nace sin sesión: ahí el usuario tiene que iniciarla
+  // adentro, y con la cuenta correcta — la app no puede hacerlo por él.
+  const openDesktop = async (id: string) => {
+    setError('');
+    setNotice('');
+    const result = await window.claudeMonitor.openDesktop(id);
+    if (!result.ok) return setError(result.error);
+    // Todas las ventanas de Desktop se ven iguales. Una abierta por fuera del
+    // panel queda atrás con OTRA cuenta y parece que el panel abrió la que no
+    // era: es lo primero que hay que decir, antes que cualquier otro aviso.
+    const ajenas = result.data.ajenas
+      ? `Ojo: hay ${result.data.ajenas} ventana(s) de Claude Desktop abierta(s) por fuera del panel, con la cuenta ` +
+        'que hayas usado en el acceso directo de Windows. Se ven iguales a esta. Cerrálas para no confundirte. '
+      : '';
+    if (ajenas) setNotice(ajenas);
+    if (result.data.yaAbierta) {
+      // Sólo pasa por un doble clic pegado en el tiempo: se ignoró el segundo
+      // para no relanzar dos veces por el mismo gesto. Tocando de nuevo en
+      // unos segundos sí abre — no es un bloqueo permanente.
+      setNotice(ajenas + 'Ya se estaba abriendo. Esperá unos segundos y volvé a tocar si no ves la ventana.');
+    } else if (result.data.firstRun) {
+      setNotice(
+        ajenas +
+          'Se abrió un Claude Desktop propio para esta cuenta, sin sesión iniciada. Iniciala ahí adentro con ESTA ' +
+          'cuenta. Si entrás con Google, se va a abrir tu navegador de siempre — es así en Windows, no se puede ' +
+          'evitar — y de ahí volvés solo. Si no ves la ventana de Desktop en la barra de tareas después de volver ' +
+          'del navegador, tocá "Desktop" de nuevo: eso la trae de vuelta, aunque puede que tengas que repetir el login.'
+      );
+    }
+  };
+
+  // Abre Desktop directamente en una carpeta, con la cuenta activa.
+  //
+  // Es la mitad "Desktop" de reanudar. No reanuda: Desktop no acepta un id de
+  // sesión, así que abre el proyecto — y ahí sus propias sesiones del CLI,
+  // las de esa cuenta, le quedan al usuario en el panel lateral.
+  const openDesktopIn = async (cwd?: string) => {
+    setError('');
+    setNotice('');
+    const result = await window.claudeMonitor.openDesktopIn(cwd);
+    if (!result.ok) return setError(result.error);
+    if (!result.data) return; // se canceló el selector de carpeta
+    const aviso = (texto: string) => setNotice([result.data?.relevo, texto].filter(Boolean).join(' '));
+    aviso(
+      result.data.firstRun
+        ? 'Se abrió un Claude Desktop propio para esta cuenta, sin sesión iniciada. Iniciala ahí adentro, con Google o con correo. Si entrás con Google se va a abrir tu navegador de siempre — es así en Windows — y de ahí volvés solo. Si al volver no ves la ventana de Desktop, tocá el botón de nuevo: la trae de vuelta, aunque puede que tengas que repetir el login.'
+        : 'Claude Desktop abrió una sesión nueva en esa carpeta. Si no ves todas tus sesiones viejas en su panel ' +
+            'lateral, usá ahí “Import Claude Code CLI sessions…”: Desktop lista sólo unas pocas hasta que las importás.'
+    );
+  };
+
+  // Abre una terminal nueva. Igual que reanudar, puede haber relevado la cuenta
+  // por falta de cupo, y eso hay que decirlo: cambia a quién le sale el gasto.
+  const nuevaEnTerminal = async (cwd?: string) => {
+    setError('');
+    setNotice('');
+    const result = await window.claudeMonitor.newSession(cwd);
+    if (!result.ok) return setError(result.error);
+    if (result.data?.relevo) setNotice(result.data.relevo);
+  };
+
+  // Reanuda la misma conversación en Desktop. Desktop adopta el transcript del
+  // CLI por su id, así que es continuar, no empezar de nuevo en esa carpeta.
+  const resumeInDesktop = async (id: string) => {
+    setError('');
+    setNotice('');
+    const result = await window.claudeMonitor.resumeInDesktop(id);
+    if (!result.ok) return setError(result.error);
+    setNotice(
+      [
+        result.data.relevo,
+        result.data.firstRun
+          ? 'Se abrió un Claude Desktop propio para esta cuenta, sin sesión iniciada. Iniciala ahí adentro, con Google o con correo. Si entrás con Google se va a abrir tu navegador de siempre — es así en Windows — y de ahí volvés solo. Si al volver no ves la ventana de Desktop, tocá el botón de nuevo: la trae de vuelta, aunque puede que tengas que repetir el login.'
+          : 'Claude Desktop está importando esa conversación, con todo el historial. Al importarla reescribe el ' +
+            '.jsonl para sacarle los bloques de razonamiento y deja una copia .pre-import al lado; podés seguir ' +
+            'reanudándola desde la terminal igual.'
+      ]
+        .filter(Boolean)
+        .join(' ')
     );
   };
 
@@ -210,13 +335,49 @@ export default function App() {
         }}
         onLogin={(id) => startLogin(id)}
         onOpenChrome={(id) => openChrome(id)}
-        onNewSessionIn={(cwd) => run(() => window.claudeMonitor.newSession(cwd))}
+        onOpenDesktop={(id) => openDesktop(id)}
+        onNewSessionIn={(cwd) => nuevaEnTerminal(cwd)}
+        onNewSessionInDesktop={(cwd) => openDesktopIn(cwd)}
         onDeleteProfile={(id) => {
           setSelectedSlug(null);
           run(() => window.claudeMonitor.deleteProfile(id));
         }}
       />
       <main className="main">
+        {/* La app toma el protocolo sola al arrancar — sólo cuando está
+            empaquetada. En desarrollo (`npm run dev`) el registro es el de
+            `electron.exe` más la ruta del proyecto, y esa ruta partida en un
+            espacio es justo lo que mandaba a Desktop a abrir la app equivocada.
+            Ver `protocol.ts`. */}
+        {protocoloNuestro === false && !empaquetada && (
+          <p className="muted protocolo">
+            En modo desarrollo esta app no toma el protocolo <code>claude://</code>: entrar a Desktop con Google puede
+            guardar la cuenta en la ventana equivocada. Con la app instalada (no <code>npm run dev</code>) se toma solo.
+          </p>
+        )}
+        {protocoloNuestro === false && empaquetada && (
+          <div className="notice protocolo">
+            Esta app no tiene el protocolo <code>claude://</code>. Sólo importa si entrás a Claude Desktop con Google:
+            la respuesta vuelve del navegador por ese enlace y, sin él, aterriza en el Desktop de siempre en vez de en
+            la ventana de la cuenta que la pidió. Entrando con correo no hace falta.
+            <button className="link" onClick={() => cambiarProtocolo(true)}>
+              Tomarlo ahora
+            </button>
+          </div>
+        )}
+        {protocoloNuestro === true && (
+          <p className="muted protocolo-ok">
+            El login con Google de Desktop vuelve a la ventana que lo pidió. Entrando con correo esto no hace falta.
+            <button className="link" onClick={() => cambiarProtocolo(false)}>
+              Devolver el protocolo
+            </button>
+          </p>
+        )}
+        {/* Siempre visible: es lo primero que hay que abrir cuando algo con
+            Desktop o con el protocolo no funciona como se espera. */}
+        <button className="link logs-toggle" onClick={() => setShowLogs(true)}>
+          Ver registro
+        </button>
         {error && <div className="error">{error}</div>}
         {notice && <div className="notice">{notice}</div>}
         {pendingLogin && (
@@ -261,9 +422,11 @@ export default function App() {
             activeProfileName={activeProfile?.name ?? ''}
             canResume={Boolean(activeProfile?.authenticated)}
             onResume={resume}
+            onResumeInDesktop={resumeInDesktop}
             onDelete={(id) => run(() => window.claudeMonitor.deleteSession(id))}
             onOpen={setOpenId}
-            onNewSession={() => run(() => window.claudeMonitor.newSession())}
+            onNewSession={() => nuevaEnTerminal()}
+            onNewSessionInDesktop={() => openDesktopIn()}
           />
         )}
       </main>
@@ -274,6 +437,13 @@ export default function App() {
           canResume={Boolean(activeProfile?.authenticated)}
           onResume={() => resume(openId)}
           onClose={() => setOpenId(null)}
+        />
+      )}
+      {showLogs && (
+        <LogsPanel
+          profileId={activeProfile?.id ?? null}
+          profileName={activeProfile?.name ?? ''}
+          onClose={() => setShowLogs(false)}
         />
       )}
     </div>

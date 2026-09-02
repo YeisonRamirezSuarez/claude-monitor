@@ -125,9 +125,13 @@ type Props = {
   activeProfileName: string;
   canResume: boolean;
   onResume: (id: string) => void;
+  /** Reanuda la misma conversación en Claude Desktop: adopta el transcript
+   *  del CLI por su id, no abre una sesión nueva. */
+  onResumeInDesktop: (id: string) => void;
   onDelete: (id: string) => void;
   onOpen: (id: string) => void;
   onNewSession: () => void;
+  onNewSessionInDesktop: () => void;
 };
 
 export default function SessionList({
@@ -138,9 +142,11 @@ export default function SessionList({
   activeProfileName,
   canResume,
   onResume,
+  onResumeInDesktop,
   onDelete,
   onOpen,
-  onNewSession
+  onNewSession,
+  onNewSessionInDesktop
 }: Props) {
   const [query, setQuery] = useState('');
   const [confirmId, setConfirmId] = useState<string | null>(null);
@@ -167,9 +173,13 @@ export default function SessionList({
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Buscar por texto o ruta…"
         />
+        {/* Los dos lugares donde se puede trabajar, uno al lado del otro: la
+            terminal y Desktop. Antes había un solo botón y la elección no
+            existía. */}
         <button className="primary" onClick={onNewSession}>
-          Nueva sesión…
+          Nueva en terminal…
         </button>
+        <button onClick={onNewSessionInDesktop}>Nueva en Desktop…</button>
       </div>
 
       <Metrics sessions={filtered} tokens={tokens} cargando={tokensLoading} />
@@ -210,7 +220,19 @@ export default function SessionList({
               }
               onClick={() => onResume(s.id)}
             >
-              Reanudar
+              Reanudar en terminal
+            </button>
+            {/* Sin `canResume`: eso mira el login del CLI, y el de Desktop es
+                otro —vive en su propia carpeta de datos—. Una cuenta sin el CLI
+                autorizado puede trabajar en Desktop igual. */}
+            <button
+              title={
+                `Seguir esta misma conversación en el Claude Desktop de "${activeProfileName}". ` +
+                'Desktop adopta el transcript y abre el historial entero.'
+              }
+              onClick={() => onResumeInDesktop(s.id)}
+            >
+              Reanudar en Desktop
             </button>
             <button onClick={() => onOpen(s.id)}>Ver conversación</button>
             <button className="danger" onClick={() => setConfirmId(s.id)}>

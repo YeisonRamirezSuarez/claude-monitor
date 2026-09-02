@@ -5,7 +5,7 @@ import { stat } from 'node:fs/promises';
  *  Sin esto el fallo es asíncrono: `spawn` no lanza, emite 'error', y un
  *  'error' sin listener es una excepción no capturada que tumba el proceso
  *  principal de Electron después de que el handler ya respondió ok. */
-function launch(command: string, args: string[], options: SpawnOptions): Promise<void> {
+export function launch(command: string, args: string[], options: SpawnOptions): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, options);
     child.once('spawn', () => {

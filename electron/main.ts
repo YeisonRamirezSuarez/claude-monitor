@@ -1,18 +1,22 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ensureHostScript } from './chrome-host';
 import { chromeStatus, closeChromeForProfile, openChromeForProfile, setupBrowserDone } from './chrome-launch';
 import { isLoggedIn } from './credentials';
+import { desktopDir, esperandoEnlace, newSessionLink, openDesktopForProfile, resumeLink } from './desktop';
+import { enlaceEn, soltar, tenemosElProtocolo, tomar } from './protocol';
+import { anotar, archivoDeRegistro, leer, registroDeDesktop } from './registro';
 import { cancelLogin, loginPending, startLogin, submitCode } from './login';
 import { markOnboardingDone } from './onboarding';
 import {
   createProfile,
   deleteProfile,
-  getActiveProfile,
   getProfile,
   getSharedRoot,
+  getActiveProfile,
   listProfiles,
+  profileForWork,
   setActiveProfile,
   ensureChromeHosts,
   markOnboardingAll,
@@ -227,23 +231,102 @@ function registerHandlers() {
     return openChromeForProfile(profile.id, profile.name);
   });
 
+  // Claude Desktop con la carpeta de datos de esta cuenta, para que su login
+  // sea el de esta cuenta y no el de la última que entró.
+  //
+  // No pide `requireLogin`: el login del CLI y el de Desktop son dos cosas
+  // distintas —Desktop guarda su token en su propia carpeta de datos— así que
+  // una cuenta sin el CLI autorizado igual puede trabajar acá, y este botón es
+  // justamente por dónde inicia sesión. Ver `desktop.ts`.
+  handle('desktop:open', async (id: string) => {
+    const profile = await getProfile(id);
+    return openDesktopForProfile(profile, await getSharedRoot());
+  });
+
+  // Lo mismo pero en Desktop, y con la cuenta activa: abrir una carpeta a
+  // trabajar es la otra mitad de "reanudar", y Desktop es el otro lugar donde
+  // se puede trabajar. Sin `cwd` pide la carpeta, igual que `sessions:new`.
+  //
+  // No hay `requireLogin`: eso mira el token del CLI, y Desktop se autentica
+  // por su cuenta adentro de la app. Exigirlo dejaría afuera justo a la cuenta
+  // que todavía no pasó por el login del CLI.
+  handle('desktop:openIn', async (cwd?: string) => {
+    const { profile, relevo } = await profileForWork();
+    let dir = typeof cwd === 'string' && cwd ? cwd : null;
+    if (!dir) {
+      const picked = await dialog.showOpenDialog({
+        title: 'Elegí la carpeta del proyecto',
+        properties: ['openDirectory']
+      });
+      if (picked.canceled || !picked.filePaths[0]) return null;
+      dir = picked.filePaths[0];
+    }
+    // Una carpeta que ya no existe abriría Desktop igual, en cualquier lado y
+    // sin decir por qué: pasa seguido con un proyecto viejo movido o borrado.
+    const destino = await stat(dir).catch(() => null);
+    if (!destino?.isDirectory()) {
+      throw new Error(`No se puede abrir en Claude Desktop: la carpeta ya no existe (${dir}).`);
+    }
+    return { ...(await openDesktopForProfile(profile, await getSharedRoot(), newSessionLink(dir))), relevo };
+  });
+
+  // Reanudar la MISMA conversación, pero en Desktop.
+  //
+  // Desktop adopta el transcript del CLI por su id y sigue donde iba — es lo
+  // que hace `/desktop` desde la terminal. Para encontrarlo necesita
+  // `CLAUDE_CONFIG_DIR` apuntando a la cuenta, y de eso ya se ocupa
+  // `openDesktopForProfile`.
+  //
+  // Se resuelve la sesión antes de abrir nada: si el `.jsonl` no está, Desktop
+  // sólo muestra un aviso suyo y la ventana queda abierta sin explicar nada.
+  handle('desktop:resume', async (id: string) => {
+    const { session } = await findSession(id);
+    const { profile, relevo } = await profileForWork();
+    return { ...(await openDesktopForProfile(profile, await getSharedRoot(), resumeLink(session.id))), relevo };
+  });
+
+  // El protocolo `claude://`, que es lo que decide si Desktop hace el login de
+  // Google adentro de su ventana o lo manda al navegador. Ver `protocol.ts`.
+  handle('protocol:status', async () => ({ nuestro: tenemosElProtocolo(), empaquetada: app.isPackaged }));
+  handle('protocol:claim', async () => {
+    const nuestro = tomar() && tenemosElProtocolo();
+    anotar('protocolo: tomado a mano', { nuestro });
+    return { nuestro };
+  });
+  handle('protocol:release', async () => {
+    soltar();
+    const nuestro = tenemosElProtocolo();
+    anotar('protocolo: devuelto', { nuestro });
+    return { nuestro };
+  });
+
+  // El registro, para poder ver desde la app lo que pasa afuera de ella.
+  // Va junto con el log de la ventana de Desktop de la cuenta pedida: la
+  // mitad de los problemas se explican comparando las dos horas.
+  handle('logs:read', async (profileId?: string) => ({
+    archivo: archivoDeRegistro(),
+    panel: leer(),
+    desktop: profileId ? await registroDeDesktop(desktopDir(profileId)) : []
+  }));
+
   handle('sessions:list', async () => listSessions(await getSharedRoot()));
   // Reanuda con la cuenta activa. No hay que mover nada: su `projects` es el
   // mismo directorio donde ya está el transcript.
   handle('sessions:resume', async (id: string) => {
     const { sharedRoot, session } = await findSession(id);
-    const target = await getActiveProfile();
+    const { profile: target, relevo } = await profileForWork();
     await requireLogin(target);
     await openTerminalAs(session.cwd, `claude --resume ${session.id}`, target);
     return {
-      compactions: await countCompactions(join(sharedRoot, 'projects', session.projectSlug, `${session.id}.jsonl`))
+      compactions: await countCompactions(join(sharedRoot, 'projects', session.projectSlug, `${session.id}.jsonl`)),
+      relevo
     };
   });
   // Una cuenta recién creada apunta a un CLAUDE_CONFIG_DIR vacío: no tiene
   // sesiones ni proyectos, y sin esto no habría forma de crear la primera
   // desde la app. Abre `claude` (sin --resume) en la carpeta elegida.
   handle('sessions:new', async (cwd?: string) => {
-    const profile = await getActiveProfile();
+    const { profile, relevo } = await profileForWork();
     await requireLogin(profile);
     let dir = typeof cwd === 'string' && cwd ? cwd : null;
     if (!dir) {
@@ -255,7 +338,7 @@ function registerHandlers() {
       dir = picked.filePaths[0];
     }
     await openTerminalAs(dir, 'claude', profile);
-    return null;
+    return { relevo };
   });
   // Leer el transcript completo, para verlo dentro de la app. La terminal
   // reproduce la conversación al reanudar, pero lo que pasa del scrollback se
@@ -301,6 +384,51 @@ function createWindow() {
   }
 }
 
+/**
+ * Le entrega un enlace `claude://` al Desktop que lo está esperando.
+ *
+ * Con el protocolo tomado, estos enlaces llegan acá en vez de a Desktop, y hay
+ * que reenviarlos o dejarían de funcionar para todo el sistema. Se manda como
+ * argumento de línea de comandos, que es como Desktop los acepta igual.
+ *
+ * A quién: a la última cuenta cuyo Desktop abrió la app, y sólo si fue hace
+ * poco. El enlace no dice de quién es —viene de afuera, con su contenido y nada
+ * más— pero el que lo espera es el que acaba de mandar al usuario al navegador.
+ * Ese es el caso del login con Google, que es para lo que existe esto.
+ *
+ * Sin una apertura reciente se cae a la cuenta activa, que es lo mejor que se
+ * puede suponer cuando el enlace llega de la nada.
+ */
+async function reenviarEnlace(url: string): Promise<void> {
+  const esperando = esperandoEnlace();
+  const profile = esperando ? await getProfile(esperando).catch(() => null) : null;
+  const destino = profile ?? (await getActiveProfile());
+  anotar('enlace claude:// recibido', {
+    url,
+    destino: destino.name,
+    porque: profile ? 'ultima ventana abierta' : 'cuenta activa (sin apertura reciente)'
+  });
+  await openDesktopForProfile(destino, await getSharedRoot(), url).catch((error) => {
+    anotar('enlace: NO se pudo reenviar', { error: String(error) });
+  });
+}
+
+// Una sola instancia, para que un enlace del sistema no abra un panel nuevo
+// sino que llegue al que ya está corriendo. Sin esto, Windows lanza otra copia
+// entera de la app por cada `claude://`.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const url = enlaceEn(argv);
+    if (url) void reenviarEnlace(url);
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+  });
+}
+
 app.whenReady().then(async () => {
   // La app no tiene nada que ofrecer en un menú: ni archivos que abrir, ni
   // edición, ni ventanas. La barra de File/Edit/View/Window/Help es la que
@@ -314,8 +442,23 @@ app.whenReady().then(async () => {
   await markOnboardingAll().catch(() => {});
   // Y con el puente de Chrome apuntando cada uno a su propia cuenta.
   await ensureChromeHosts().catch(() => {});
+  // El protocolo `claude://`, tomado al arrancar y sin preguntar.
+  //
+  // No es una preferencia: es lo que hace que agregar una cuenta de Desktop con
+  // Google funcione. Sin esto, Desktop manda ese login al navegador, la
+  // respuesta vuelve al Desktop de siempre y la cuenta queda guardada en el
+  // lugar equivocado — o sea, la app no cumple lo que promete. Preguntarlo cada
+  // vez era pedirle al usuario que decidiera sobre un detalle interno.
+  //
+  // Se puede devolver desde el panel; se vuelve a tomar en el próximo arranque.
+  if (!tenemosElProtocolo()) tomar();
+  anotar('panel: arrancado', { protocoloNuestro: tenemosElProtocolo(), empaquetada: app.isPackaged });
   registerHandlers();
   createWindow();
+  // Windows puede haber lanzado la app PARA entregar un enlace: entonces no
+  // llega por `second-instance` sino en la línea de comandos del arranque.
+  const url = enlaceEn(process.argv);
+  if (url) await reenviarEnlace(url);
 });
 
 app.on('window-all-closed', () => {

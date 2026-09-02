@@ -177,10 +177,14 @@ button.primary:hover {
   gap: 6px;
 }
 
-.profile-row > button:first-child {
-  flex: 1;
-  text-align: left;
-  min-width: 0;
+/* Los botones abajo del nombre, no al lado. `wrap` porque son hasta tres y el
+   ancho de la barra no es negociable. */
+.profile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px 2px;
 }
 
 .profile-name {
@@ -189,6 +193,16 @@ button.primary:hover {
   align-items: center;
   padding: 7px 8px;
   font-weight: 600;
+  min-width: 0;
+  text-align: left;
+}
+
+/* El nombre lo escribe el usuario: sin recorte, uno largo empuja el ancho de
+   la barra o se derrama sobre lo que tenga al lado. */
+.profile-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   min-width: 0;
 }
 
@@ -226,6 +240,12 @@ button.primary:hover {
 
 .dot.off {
   background: #3d4a63;
+}
+
+/* Ni verde ni apagado: la sesión se da por viva pero nadie lo confirmó. */
+.dot.guess {
+  background: var(--warn);
+  box-shadow: 0 0 8px #fbbf2455;
 }
 
 /* Lo único animado de la app: el pulso lento de la cuenta en uso. */
@@ -667,8 +687,118 @@ button.link.pendiente:hover {
   background: #fbbf2418;
 }
 
+/* Lo que se afirma sin haberlo podido verificar en esta lectura: se dice, pero
+   con menos voz que un dato recién comprobado. */
+button.link.incierto {
+  opacity: 0.62;
+  font-style: italic;
+}
+
 .chrome-falta {
   margin: 2px 8px 0;
   font-size: 11px;
   color: var(--warn);
+}
+
+/* Consumo que no salió de la API sino de la caché que dejó el CLI: se muestra,
+   pero sin la misma voz que un número de ahora. */
+.usage.cacheada {
+  opacity: 0.55;
+}
+
+/* El desplegable del "+" de un proyecto: dónde abrir la sesión nueva. */
+.projects .nueva-en {
+  flex-basis: 100%;
+  display: flex;
+  gap: 4px;
+  padding: 2px 0 4px 8px;
+}
+
+/* El aviso del protocolo claude:// y su interruptor. */
+.notice.protocolo,
+.protocolo-ok {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.protocolo-ok {
+  font-size: 11px;
+  margin: 0 0 8px;
+}
+
+/* El panel de registro: overlay simple, dos columnas comparables. */
+.logs-overlay {
+  position: fixed;
+  inset: 0;
+  background: #05070ccc;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.logs-panel {
+  width: min(1000px, 92vw);
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  background: #0b1424;
+  border: 1px solid #24314a;
+  border-radius: 10px;
+  padding: 14px;
+  overflow: hidden;
+}
+
+.logs-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.logs-header h2 {
+  margin: 0;
+  flex: none;
+}
+
+.logs-header .muted {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.logs-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  overflow: hidden;
+  flex: 1;
+}
+
+.logs-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #060a13;
+  border: 1px solid #1c2740;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.logs-col h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.logs-col pre {
+  margin: 0;
+  overflow: auto;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }

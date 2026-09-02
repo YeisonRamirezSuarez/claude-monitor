@@ -6,10 +6,11 @@ import { join } from 'node:path';
 import type { Profile, ProfileWithStatus } from '../shared/types';
 import { ensureAll, ensureHostScript } from './chrome-host';
 import { chromeStatus } from './chrome-launch';
-import { isLoggedIn } from './credentials';
+import { isLoggedIn, sessionExpiry } from './credentials';
 import { markOnboardingDone } from './onboarding';
 import { syncAll, syncPlugins } from './plugins';
 import { effectiveActiveId, visibleProfiles } from './profile-visibility';
+import { avisoDeCupo } from './relevo';
 import { shareAll, shareProjects, unlinkShared } from './shared-projects';
 import { readUsage } from './usage';
 
@@ -44,12 +45,15 @@ async function loadRegistry(): Promise<Registry> {
   return fresh;
 }
 
-async function isAuthenticated(configDir: string): Promise<boolean> {
+/** Si la sesión vive, y hasta cuándo. `expiresAt` en `null` con
+ *  `authenticated` en `true` es el caso suposición: hay token de renovación
+ *  pero el archivo no dice cuándo vence. Ver `credentials.ts`. */
+async function authState(configDir: string): Promise<{ authenticated: boolean; expiresAt: number | null }> {
   try {
-    const raw = await readFile(join(configDir, '.credentials.json'), 'utf8');
-    return isLoggedIn(JSON.parse(raw));
+    const parsed = JSON.parse(await readFile(join(configDir, '.credentials.json'), 'utf8'));
+    return { authenticated: isLoggedIn(parsed), expiresAt: sessionExpiry(parsed) };
   } catch {
-    return false;
+    return { authenticated: false, expiresAt: null };
   }
 }
 
@@ -65,13 +69,17 @@ async function exists(path: string): Promise<boolean> {
 export async function listProfiles(): Promise<{ activeProfileId: string; profiles: ProfileWithStatus[] }> {
   const registry = await loadRegistry();
   const profiles = await Promise.all(
-    visibleProfiles(registry.profiles).map(async (p) => ({
-      ...p,
-      exists: await exists(p.configDir),
-      authenticated: await isAuthenticated(p.configDir),
-      chrome: await chromeStatus(p.id, p.name),
-      usage: await readUsage(p.configDir)
-    }))
+    visibleProfiles(registry.profiles).map(async (p) => {
+      const auth = await authState(p.configDir);
+      return {
+        ...p,
+        exists: await exists(p.configDir),
+        authenticated: auth.authenticated,
+        authExpiresAt: auth.expiresAt,
+        chrome: await chromeStatus(p.id, p.name),
+        usage: await readUsage(p.configDir)
+      };
+    })
   );
   return { activeProfileId: effectiveActiveId(registry.profiles, registry.activeProfileId), profiles };
 }
@@ -84,6 +92,29 @@ export async function getActiveProfile(): Promise<Profile> {
 
 /** El pozo de sesiones vive en la cuenta principal: es el `~/.claude` real, el
  *  que ya tiene todo el historial y el que usa el CLI cuando se lo abre a mano. */
+/**
+ * La cuenta con la que abrir, que es SIEMPRE la activa, más el aviso de cupo si
+ * esa cuenta ya no da.
+ *
+ * No elige por el usuario a propósito. Cambiar de cuenta sola movería el gasto
+ * a otra sin que nadie lo pidiera, y cuál usar es una decisión suya. El aviso
+ * dice cuál tiene cupo; cambiarla es un clic en el panel. Ver `relevo.ts`.
+ */
+export async function profileForWork(): Promise<{ profile: Profile; relevo: string | null }> {
+  const registry = await loadRegistry();
+  const activeId = effectiveActiveId(registry.profiles, registry.activeProfileId);
+  const candidatos = await Promise.all(
+    visibleProfiles(registry.profiles).map(async (p) => ({
+      id: p.id,
+      name: p.name,
+      authenticated: (await authState(p.configDir)).authenticated,
+      usage: await readUsage(p.configDir)
+    }))
+  );
+  const profile = registry.profiles.find((p) => p.id === activeId) ?? registry.profiles[0];
+  return { profile, relevo: avisoDeCupo(candidatos, activeId) };
+}
+
 export async function getSharedRoot(): Promise<string> {
   const registry = await loadRegistry();
   return (registry.profiles.find((p) => p.id === 'default') ?? defaultProfile()).configDir;

@@ -4,7 +4,7 @@ import { copyFile, cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } f
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { merge, readRecord, vale, writeRecord, type Observacion } from './browser-store';
+import { merge, readRecord, vale, writeRecord, type Observacion, type Visto } from './browser-store';
 
 const run = promisify(execFile);
 
@@ -187,8 +187,26 @@ export function hasSessionCookie(cookies: Buffer): boolean {
   return cookies.includes('claude.aisessionKey');
 }
 
-/** Lo que le falta —o no— al navegador de una cuenta. */
-export type ChromeStatus = { profileExists: boolean; extension: boolean; loggedIn: boolean };
+/**
+ * Lo que le falta —o no— al navegador de una cuenta.
+ *
+ * `extension` y `loggedIn` pueden venir del registro en disco y no de haber
+ * mirado recién: `merge` nunca degrada un estado bueno por no haber podido
+ * leer. Eso evita avisos falsos, pero deja a la interfaz afirmando con la misma
+ * cara algo verificado hace un segundo y algo visto hace una semana. Por eso
+ * viajan los dos datos que faltan para decirlo:
+ *
+ *   `verified`: esta lectura pudo abrir los archivos de Chrome.
+ *   `seenAt`:   cuándo se observó lo más viejo de lo que se está afirmando.
+ */
+export type ChromeStatus = {
+  profileExists: boolean;
+  extension: boolean;
+  loggedIn: boolean;
+  verified: boolean;
+  /** Milisegundos epoch, o 0 si nunca se pudo mirar. */
+  seenAt: number;
+};
 
 /** Dónde se anota lo que la app sabe de cada navegador. */
 export const storeDir = () => join(localAppData(), 'claude-monitor', 'browsers');
@@ -265,6 +283,12 @@ export async function chromeStatus(profileId: string, accountName = ''): Promise
   const previo = await readRecord(storeDir(), profileId);
   const profileExists = Boolean(await stat(profilePath(profileId)).catch(() => null));
 
+  // Sin carpeta no hay nada que mirar, y tampoco hay que desmentir lo guardado:
+  // `readable: false` deja el último estado conocido en su lugar.
+  const sinMirar = { ok: false, readable: false };
+  const sesion = profileExists ? await observeSession(profileId) : sinMirar;
+  const extension = profileExists ? await observeExtension(profileId) : sinMirar;
+
   const registro = merge(
     previo,
     {
@@ -272,14 +296,25 @@ export async function chromeStatus(profileId: string, accountName = ''): Promise
       userDataDir: browserDir(profileId),
       displayName: previo?.displayName || (accountName ? displayName(accountName) : '')
     },
-    // Sin carpeta no hay nada que mirar, y tampoco hay que desmentir lo
-    // guardado: `readable: false` deja el último estado conocido en su lugar.
-    profileExists ? await observeSession(profileId) : { ok: false, readable: false },
-    profileExists ? await observeExtension(profileId) : { ok: false, readable: false }
+    sesion,
+    extension
   );
   await writeRecord(storeDir(), registro).catch(() => {});
 
-  return { profileExists, extension: vale(registro.extension), loggedIn: vale(registro.session) };
+  return {
+    profileExists,
+    extension: vale(registro.extension),
+    loggedIn: vale(registro.session),
+    verified: sesion.readable && extension.readable,
+    seenAt: observadoEn(registro.session, registro.extension)
+  };
+}
+
+/** La observación MÁS VIEJA de las dos, que es la antigüedad real de lo que se
+ *  está afirmando. Con la más nueva, un dato fresco taparía uno rancio. */
+export function observadoEn(...vistos: (Visto | null)[]): number {
+  const fechas = vistos.map((v) => v?.seenAt ?? 0);
+  return fechas.some((f) => f === 0) ? 0 : Math.min(...fechas);
 }
 
 /**

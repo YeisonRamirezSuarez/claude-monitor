@@ -38,3 +38,18 @@ export function canCallApi(credentials: unknown, now = Date.now()): boolean {
   if (typeof accessToken !== 'string' || !accessToken) return false;
   return typeof expiresAt === 'number' ? expiresAt > now : true;
 }
+
+/**
+ * Cuándo vence la sesión según el archivo, o `null` si el archivo no lo dice.
+ *
+ * `isLoggedIn` devuelve `true` en los dos casos: con fecha porque la mira, y
+ * sin fecha porque tener un token de renovación ya alcanza para no ofrecer un
+ * login de más. Pero no son lo mismo — el segundo es una suposición— y la
+ * interfaz tiene que poder distinguirlos en vez de pintar el mismo punto verde.
+ */
+export function sessionExpiry(credentials: unknown): number | null {
+  const oauth = (credentials as { claudeAiOauth?: unknown } | null | undefined)?.claudeAiOauth;
+  if (!oauth || typeof oauth !== 'object') return null;
+  const { refreshTokenExpiresAt } = oauth as Record<string, unknown>;
+  return typeof refreshTokenExpiresAt === 'number' ? refreshTokenExpiresAt : null;
+}

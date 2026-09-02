@@ -12,6 +12,7 @@ import {
   displayName,
   hasSessionCookie,
   nextStepUrl,
+  observadoEn,
   parseRegistryPath,
   withProfileName
 } from './chrome-launch';
@@ -106,10 +107,20 @@ describe('hasSessionCookie', () => {
   });
 });
 
+describe('observadoEn', () => {
+  it('devuelve la observación más vieja, que es la antigüedad real de lo que se afirma', () => {
+    expect(observadoEn({ ok: true, seenAt: 500 }, { ok: true, seenAt: 100 })).toBe(100);
+  });
+
+  it('con algo nunca observado no hay antigüedad que dar', () => {
+    expect(observadoEn({ ok: true, seenAt: 500 }, null)).toBe(0);
+  });
+});
+
 describe('setupBrowserDone', () => {
   const cuenta = (authenticated: boolean, extension: boolean, loggedIn: boolean) => ({
     authenticated,
-    chrome: { profileExists: true, extension, loggedIn }
+    chrome: { profileExists: true, extension, loggedIn, verified: true, seenAt: 1 }
   });
 
   it('con la extensión y la sesión listas, la ventana de configuración ya no hace falta', () => {
@@ -131,7 +142,13 @@ describe('setupBrowserDone', () => {
 });
 
 describe('nextStepUrl', () => {
-  const estado = (loggedIn: boolean, extension: boolean) => ({ profileExists: true, loggedIn, extension });
+  const estado = (loggedIn: boolean, extension: boolean) => ({
+    profileExists: true,
+    loggedIn,
+    extension,
+    verified: true,
+    seenAt: 1
+  });
 
   it('sin extensión manda a la tienda, aunque falte todo lo demás: es el primer paso', () => {
     expect(nextStepUrl(estado(false, false))).toContain('chromewebstore.google.com');
