@@ -124,9 +124,9 @@ type Props = {
    *  dueña de la sesión. */
   activeProfileName: string;
   canResume: boolean;
-  /** El entorno de la cuenta activa. Crear ahí necesita el lanzador de WSL,
-   *  que todavía no existe (rebanada 2) — mientras tanto "Nueva…" se
-   *  deshabilita con motivo en vez de fallar al primer clic. */
+  /** El entorno de la cuenta activa. Crear en terminal ya usa el lanzador de
+   *  WSL (Task 14): sólo "Nueva en Desktop…" se sigue deshabilitando con
+   *  motivo, porque Desktop no puede hospedar una sesión de la distro. */
   activeProfileEntorno: Entorno;
   onResume: (id: string) => void;
   /** Reanuda la misma conversación en Claude Desktop: adopta el transcript
@@ -181,15 +181,10 @@ export default function SessionList({
         {/* Los dos lugares donde se puede trabajar, uno al lado del otro: la
             terminal y Desktop. Antes había un solo botón y la elección no
             existía. */}
-        {/* Crear con la cuenta activa necesita el lanzador de WSL (rebanada 2,
-            todavía no construido): con una cuenta de ese tipo activa, los dos
-            botones se deshabilitan con el motivo en vez de fallar al tocarlos. */}
-        <button
-          className="primary"
-          disabled={activeProfileEntorno.tipo === 'wsl'}
-          title={motivoDeshabilitado(activeProfileEntorno)}
-          onClick={onNewSession}
-        >
+        {/* Crear en terminal con una cuenta WSL usa el lanzador (Task 14): ya
+            no se deshabilita. Crear en Desktop sigue deshabilitado con
+            motivo: Desktop no puede hospedar una sesión de la distro (§7). */}
+        <button className="primary" onClick={onNewSession}>
           Nueva en terminal…
         </button>
         <button
@@ -238,13 +233,11 @@ export default function SessionList({
           </p>
           <div className="actions">
             <button
-              disabled={!canResume || s.entorno.tipo === 'wsl'}
+              disabled={!canResume}
               title={
-                s.entorno.tipo === 'wsl'
-                  ? motivoDeshabilitado(s.entorno)
-                  : canResume
-                    ? `Reanudar con la cuenta "${activeProfileName}"`
-                    : `La cuenta "${activeProfileName}" no tiene la sesión iniciada`
+                canResume
+                  ? `Reanudar con la cuenta "${activeProfileName}"`
+                  : `La cuenta "${activeProfileName}" no tiene la sesión iniciada`
               }
               onClick={() => onResume(s.id)}
             >
@@ -269,7 +262,7 @@ export default function SessionList({
             <button
               className="danger"
               disabled={s.entorno.tipo === 'wsl'}
-              title={motivoDeshabilitado(s.entorno)}
+              title={motivoDeshabilitado(s.entorno, 'borrar')}
               onClick={() => setConfirmId(s.id)}
             >
               Borrar

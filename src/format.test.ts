@@ -11,9 +11,14 @@ describe('etiquetaDeEntorno', () => {
 });
 
 describe('motivoDeshabilitado', () => {
-  it('explica por qué no se puede, en vez de un botón muerto', () => {
+  it('motivo por defecto: Desktop no puede hospedar una sesión de la distro', () => {
     expect(motivoDeshabilitado({ tipo: 'wsl', distro: 'Ubuntu', home: '/home/v' })).toBe(
-      'Se reanuda desde Ubuntu'
+      'Claude Desktop no puede abrir sesiones de Ubuntu'
+    );
+  });
+  it('borrar tiene su propio motivo: no es que Desktop no pueda, es que no está habilitado todavía', () => {
+    expect(motivoDeshabilitado({ tipo: 'wsl', distro: 'Ubuntu', home: '/home/v' }, 'borrar')).toBe(
+      'Borrar sesiones de Ubuntu no está disponible todavía'
     );
   });
   it('en Windows no hay motivo: el botón anda', () => {

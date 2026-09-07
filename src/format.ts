@@ -4,10 +4,21 @@ import type { Entorno } from '../shared/types';
  *  mayoría, y marcarlas todas convierte la marca en ruido. */
 export const etiquetaDeEntorno = (e: Entorno): string => (e.tipo === 'wsl' ? e.distro : '');
 
-/** Por qué no se puede reanudar/crear desde el panel. Un botón deshabilitado
- *  sin motivo se lee como un bug; con motivo, como una frontera. */
-export const motivoDeshabilitado = (e: Entorno): string =>
-  e.tipo === 'wsl' ? `Se reanuda desde ${e.distro}` : '';
+/** Por qué una acción sigue deshabilitada para una cuenta de WSL. Un botón
+ *  deshabilitado sin motivo se lee como un bug; con motivo, como una
+ *  frontera. Desde la Task 14, reanudar y crear en terminal ya funcionan
+ *  desde el panel: lo que queda deshabilitado tiene dos motivos distintos,
+ *  no uno solo:
+ *  - Desktop es una app de Windows y no puede hospedar una sesión de la
+ *    distro (permanente, spec §7).
+ *  - Borrar sesiones de WSL no está habilitado en esta rebanada (decisión de
+ *    producto, spec §9 — no una imposibilidad técnica). */
+export const motivoDeshabilitado = (e: Entorno, contexto: 'desktop' | 'borrar' = 'desktop'): string => {
+  if (e.tipo !== 'wsl') return '';
+  return contexto === 'borrar'
+    ? `Borrar sesiones de ${e.distro} no está disponible todavía`
+    : `Claude Desktop no puede abrir sesiones de ${e.distro}`;
+};
 
 const RELATIVE = new Intl.RelativeTimeFormat('es', { numeric: 'auto' });
 const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [

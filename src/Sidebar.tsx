@@ -485,12 +485,11 @@ export default function Sidebar(props: Props) {
             </button>
             {nuevoEn === slug && (
               <div className="nueva-en">
-                {/* Igual que la barra de SessionList: crear con la cuenta
-                    activa necesita el lanzador de WSL, que todavía no existe. */}
+                {/* Igual que la barra de SessionList: crear en terminal con
+                    la cuenta activa usa el lanzador de WSL (Task 14), ya no
+                    se deshabilita. */}
                 <button
                   className="link"
-                  disabled={activeProfileEntorno.tipo === 'wsl'}
-                  title={motivoDeshabilitado(activeProfileEntorno)}
                   onClick={() => {
                     setNuevoEn(null);
                     props.onNewSessionIn(group[0].cwd);
