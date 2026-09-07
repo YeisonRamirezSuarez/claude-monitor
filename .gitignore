@@ -4,3 +4,6 @@ dist/
 release/
 debug.log
 *.timestamp-*.mjs
+
+# Scratch de subagent-driven-development
+.superpowers/
