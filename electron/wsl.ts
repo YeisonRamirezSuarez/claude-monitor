@@ -7,7 +7,11 @@
  * se puede probar sin una distro instalada.
  */
 
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { Entorno, EstadoRaiz } from '../shared/types';
+
+const run = promisify(execFile);
 
 /** El entorno de siempre. Existe para no repetir el literal en cada llamador. */
 export const WINDOWS: Entorno = { tipo: 'windows' };
@@ -30,6 +34,14 @@ export const WINDOWS: Entorno = { tipo: 'windows' };
  */
 export function esWsl(entorno?: Entorno): boolean {
   return entorno?.tipo === 'wsl';
+}
+
+/** Si se puede mirar el disco de una raíz sin efectos. Windows: siempre.
+ *  WSL: sólo si la distro YA está corriendo — tocar la UNC de una apagada
+ *  la enciende (medido: 1,90 s, la distro queda Running con 345 MB). */
+export function sePuedeLeer(entorno: Entorno | undefined, corriendo: string[]): boolean {
+  if (!esWsl(entorno)) return true;
+  return corriendo.includes((entorno as Extract<Entorno, { tipo: 'wsl' }>).distro);
 }
 
 /**
@@ -108,4 +120,58 @@ export function estadoDeRaiz(args: {
     return { tipo: 'sin-cli', mensaje: `Falta el CLI en ${distro}` };
   }
   return { tipo: 'ok' };
+}
+
+/**
+ * Techo para toda llamada a `wsl.exe`.
+ *
+ * Esto corre en el proceso main: una llamada que no vuelve congela el panel.
+ * Medido: tocar la UNC de una distro apagada tarda 1,90 s, y una distro
+ * enferma puede colgar indefinidamente. El resto del proyecto no tiene
+ * timeouts y no se los agrega acá: es otro trabajo.
+ */
+export const TIMEOUT_WSL = 8000;
+
+export function argsDeConsulta(que: 'instaladas' | 'corriendo'): string[] {
+  return que === 'corriendo' ? ['-l', '-q', '--running'] : ['-l', '-q'];
+}
+
+/** `wsl.exe` emite UTF-16LE. Con 'buffer' se decodifica acá y no se depende de
+ *  la codificación por defecto del proceso. */
+async function consultar(que: 'instaladas' | 'corriendo'): Promise<string[]> {
+  const { stdout } = await run('wsl.exe', argsDeConsulta(que), {
+    encoding: 'buffer',
+    timeout: TIMEOUT_WSL,
+    windowsHide: true
+  }).catch(() => ({ stdout: Buffer.alloc(0) }));
+  return parseDistros(Buffer.from(stdout).toString('utf16le'));
+}
+
+export const distrosInstaladas = (): Promise<string[]> => consultar('instaladas');
+export const distrosCorriendo = (): Promise<string[]> => consultar('corriendo');
+
+/** El `$HOME` de la distro. Se pregunta UNA vez, al dar de alta, y se persiste
+ *  en `Entorno.home`: averiguarlo en cada arranque obligaría a encender la
+ *  distro sólo para saber una ruta. */
+export async function homeDe(distro: string): Promise<string> {
+  const { stdout } = await run('wsl.exe', ['-d', distro, '--', 'bash', '-lc', 'echo $HOME'], {
+    encoding: 'utf8',
+    timeout: TIMEOUT_WSL,
+    windowsHide: true
+  });
+  const home = stdout.replace(/\0/g, '').trim();
+  if (!home.startsWith('/')) throw new Error(`No se pudo leer el $HOME de ${distro}`);
+  return home;
+}
+
+/** Si `claude` está en el PATH de login de la distro. `-l` porque nvm y
+ *  compañía viven en el perfil de login. */
+export async function hayCliEn(distro: string): Promise<boolean> {
+  return run('wsl.exe', ['-d', distro, '--', 'bash', '-lc', 'command -v claude'], {
+    encoding: 'utf8',
+    timeout: TIMEOUT_WSL,
+    windowsHide: true
+  })
+    .then(({ stdout }) => stdout.trim().length > 0)
+    .catch(() => false);
 }

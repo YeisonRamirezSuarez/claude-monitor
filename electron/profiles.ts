@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
-import type { Profile, ProfileWithStatus } from '../shared/types';
+import type { Entorno, Profile, ProfileWithStatus, Raiz } from '../shared/types';
 import { ensureAll, ensureHostScript } from './chrome-host';
 import { chromeStatus } from './chrome-launch';
 import { isLoggedIn, sessionExpiry } from './credentials';
@@ -13,6 +13,17 @@ import { effectiveActiveId, visibleProfiles } from './profile-visibility';
 import { avisoDeCupo } from './relevo';
 import { shareAll, shareProjects, unlinkShared } from './shared-projects';
 import { readUsage } from './usage';
+import {
+  WINDOWS,
+  configDirUNC,
+  distrosCorriendo,
+  distrosInstaladas,
+  esWsl,
+  estadoDeRaiz,
+  hayCliEn,
+  homeDe,
+  sePuedeLeer
+} from './wsl';
 
 type Registry = { activeProfileId: string; profiles: Profile[] };
 
@@ -66,10 +77,47 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * Las distros corriendo, y sólo si hay alguna cuenta que las necesite.
+ *
+ * Se pregunta UNA vez por llamada, no una por cuenta. Sin cuentas WSL no se
+ * ejecuta `wsl.exe` en absoluto: el usuario que no tiene WSL no paga nada por
+ * esta compuerta.
+ */
+async function distrosVivas(profiles: Profile[]): Promise<string[]> {
+  return profiles.some((p) => esWsl(p.entorno)) ? distrosCorriendo() : [];
+}
+
+/**
+ * Lo que se puede afirmar de una cuenta a la que NO se le puede mirar el disco.
+ *
+ * Son exactamente los valores que devuelven hoy `exists`, `authState`,
+ * `chromeStatus` y `readUsage` cuando no hay nada que leer, para que la interfaz
+ * no tenga que aprender un caso nuevo.
+ */
+function sinMirar(p: Profile): ProfileWithStatus {
+  return {
+    ...p,
+    exists: false,
+    authenticated: false,
+    authExpiresAt: null,
+    chrome: { profileExists: false, extension: false, loggedIn: false, verified: false, seenAt: 0 },
+    usage: null
+  };
+}
+
 export async function listProfiles(): Promise<{ activeProfileId: string; profiles: ProfileWithStatus[] }> {
   const registry = await loadRegistry();
+  const visibles = visibleProfiles(registry.profiles);
+  // La compuerta NO es una optimización: `exists`, `authState`, `chromeStatus` y
+  // `readUsage` leen el `configDir`, y el de una cuenta WSL es una UNC — tocarla
+  // ENCIENDE la distro apagada del usuario (1,90 s, 345 MB de vmmemWSL). Esto
+  // corre en cada refresco del panel, así que sin compuerta la VM quedaría
+  // prendida para siempre por culpa del monitor.
+  const corriendo = await distrosVivas(visibles);
   const profiles = await Promise.all(
-    visibleProfiles(registry.profiles).map(async (p) => {
+    visibles.map(async (p) => {
+      if (!sePuedeLeer(p.entorno, corriendo)) return sinMirar(p);
       const auth = await authState(p.configDir);
       return {
         ...p,
@@ -103,13 +151,23 @@ export async function getActiveProfile(): Promise<Profile> {
 export async function profileForWork(): Promise<{ profile: Profile; relevo: string | null }> {
   const registry = await loadRegistry();
   const activeId = effectiveActiveId(registry.profiles, registry.activeProfileId);
+  const visibles = visibleProfiles(registry.profiles);
+  // Misma compuerta que en `listProfiles`, y por el mismo motivo: `authState` y
+  // `readUsage` leen el `configDir`, que en una cuenta WSL es una UNC, y tocarla
+  // enciende la distro. Averiguar si a una cuenta le queda cupo no puede costar
+  // prenderle la VM al usuario.
+  const corriendo = await distrosVivas(visibles);
   const candidatos = await Promise.all(
-    visibleProfiles(registry.profiles).map(async (p) => ({
-      id: p.id,
-      name: p.name,
-      authenticated: (await authState(p.configDir)).authenticated,
-      usage: await readUsage(p.configDir)
-    }))
+    visibles.map(async (p) =>
+      sePuedeLeer(p.entorno, corriendo)
+        ? {
+            id: p.id,
+            name: p.name,
+            authenticated: (await authState(p.configDir)).authenticated,
+            usage: await readUsage(p.configDir)
+          }
+        : { id: p.id, name: p.name, authenticated: false, usage: null }
+    )
   );
   const profile = registry.profiles.find((p) => p.id === activeId) ?? registry.profiles[0];
   return { profile, relevo: avisoDeCupo(candidatos, activeId) };
@@ -174,6 +232,72 @@ export async function createProfile(name: string): Promise<Profile> {
   // Y con su puente de Chrome ya apuntado, para no arrancar emparejando contra
   // la carpeta de otra cuenta.
   await ensureHostScript(profile.configDir, sharedRoot).catch(() => {});
+  registry.profiles.push(profile);
+  await saveRegistry(registry);
+  return profile;
+}
+
+/**
+ * Todas las raíces que hay que leer: el pozo de Windows más una por cada
+ * cuenta WSL.
+ *
+ * La compuerta es `wsl -l -q --running` y NO es una optimización: tocar la UNC
+ * de una distro apagada la enciende (medido: True en 1,90 s, la distro queda
+ * Running, 345 MB de vmmemWSL). Como el panel refresca la lista, sondear a
+ * ciegas dejaría la VM prendida para siempre — el monitor sería la causa del
+ * problema de memoria que ayuda a observar.
+ */
+export async function raices(): Promise<Raiz[]> {
+  const registry = await loadRegistry();
+  const salida: Raiz[] = [
+    { configDir: await getSharedRoot(), entorno: WINDOWS, estado: { tipo: 'ok' } }
+  ];
+
+  const wsl = registry.profiles.filter(
+    (p): p is Profile & { entorno: Extract<Entorno, { tipo: 'wsl' }> } => p.entorno?.tipo === 'wsl'
+  );
+  if (wsl.length === 0) return salida;
+
+  const [instaladas, corriendo] = await Promise.all([distrosInstaladas(), distrosCorriendo()]);
+
+  for (const p of wsl) {
+    const { distro } = p.entorno;
+    // Sólo se mira el disco si la distro YA está corriendo. Si no, ni se toca.
+    const arranca = corriendo.includes(distro) && instaladas.includes(distro);
+    const hayConfig = arranca ? Boolean(await stat(p.configDir).catch(() => null)) : false;
+    const hayCli = arranca ? await hayCliEn(distro) : false;
+    salida.push({
+      configDir: p.configDir,
+      entorno: p.entorno,
+      estado: estadoDeRaiz({ distro, corriendo, instaladas, hayConfig, hayCli })
+    });
+  }
+  return salida;
+}
+
+/** Da de alta una cuenta que vive en una distro. El `configDir` es ADOPTADO:
+ *  no se crea nada en disco, y por eso `sePuedeBorrarDelDisco` lo protege. */
+export async function createWslProfile(name: string, distro: string): Promise<Profile> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('El nombre de la cuenta no puede estar vacío');
+  if (!(await distrosInstaladas()).includes(distro)) {
+    throw new Error(`La distro ${distro} no está instalada`);
+  }
+  if (!(await hayCliEn(distro))) {
+    throw new Error(`En ${distro} no hay \`claude\` instalado. Instalalo ahí y volvé a intentar.`);
+  }
+  const home = await homeDe(distro);
+  const registry = await loadRegistry();
+  const id = randomUUID().slice(0, 8);
+  const profile: Profile = {
+    id,
+    name: trimmed,
+    configDir: configDirUNC(distro, home),
+    isDefault: false,
+    entorno: { tipo: 'wsl', distro, home }
+  };
+  // Ni mkdir, ni shareProjects, ni syncPlugins, ni ensureHostScript: la carpeta
+  // ya existe y es del usuario, el pozo no la admite, y Chrome es de Windows.
   registry.profiles.push(profile);
   await saveRegistry(registry);
   return profile;

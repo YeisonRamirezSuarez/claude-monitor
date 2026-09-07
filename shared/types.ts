@@ -18,6 +18,10 @@ export type Entorno =
   | { tipo: 'windows' }
   | { tipo: 'wsl'; distro: string; home: string };
 
+/** Una raíz de lectura y en qué estado está. Viaja por IPC: la UI necesita
+ *  poder decir "distro apagada" en vez de mostrar una lista corta y muda. */
+export type Raiz = { configDir: string; entorno: Entorno; estado: EstadoRaiz };
+
 export type Profile = {
   id: string;
   name: string;

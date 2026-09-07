@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { configDirUNC, esWsl, parseDistros, estadoDeRaiz } from './wsl';
+import {
+  TIMEOUT_WSL,
+  argsDeConsulta,
+  configDirUNC,
+  esWsl,
+  parseDistros,
+  estadoDeRaiz,
+  sePuedeLeer
+} from './wsl';
 
 describe('parseDistros', () => {
   it('lee la salida de wsl -l -q', () => {
@@ -91,5 +99,43 @@ describe('esWsl', () => {
 
   it('false sin entorno: su ausencia significa Windows', () => {
     expect(esWsl(undefined)).toBe(false);
+  });
+});
+
+describe('sePuedeLeer', () => {
+  it('Windows siempre se puede leer', () => {
+    expect(sePuedeLeer({ tipo: 'windows' }, [])).toBe(true);
+  });
+
+  it('sin entorno se puede leer: su ausencia significa Windows', () => {
+    expect(sePuedeLeer(undefined, [])).toBe(true);
+  });
+
+  it('WSL con la distro corriendo se puede leer', () => {
+    expect(sePuedeLeer({ tipo: 'wsl', distro: 'Ubuntu', home: '/home/vos' }, ['Ubuntu'])).toBe(true);
+  });
+
+  it('WSL con la distro apagada NO se puede leer: tocar la UNC la encendería', () => {
+    expect(sePuedeLeer({ tipo: 'wsl', distro: 'Ubuntu', home: '/home/vos' }, ['Debian'])).toBe(false);
+  });
+
+  it('WSL sin nada corriendo NO se puede leer', () => {
+    expect(sePuedeLeer({ tipo: 'wsl', distro: 'Ubuntu', home: '/home/vos' }, [])).toBe(false);
+  });
+});
+
+describe('llamadas a wsl.exe', () => {
+  it('toda consulta lleva timeout: una distro enferma no puede congelar el panel', () => {
+    // Corre en el proceso main. Medido: tocar la UNC de una distro apagada
+    // tarda 1,90 s; una distro enferma puede no volver nunca.
+    expect(TIMEOUT_WSL).toBeGreaterThan(0);
+    expect(TIMEOUT_WSL).toBeLessThanOrEqual(10000);
+  });
+
+  it('la consulta de lo que corre no enciende nada', () => {
+    // `wsl -l -q --running` es la única forma barata de preguntar sin efecto.
+    // Verificado: 0,12 s, y la distro sigue apagada después.
+    expect(argsDeConsulta('corriendo')).toEqual(['-l', '-q', '--running']);
+    expect(argsDeConsulta('instaladas')).toEqual(['-l', '-q']);
   });
 });
