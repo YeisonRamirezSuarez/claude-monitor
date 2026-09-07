@@ -2,7 +2,7 @@ import { app } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 import type { Profile, ProfileWithStatus } from '../shared/types';
 import { ensureAll, ensureHostScript } from './chrome-host';
 import { chromeStatus } from './chrome-launch';
@@ -187,6 +187,30 @@ export async function setActiveProfile(id: string): Promise<void> {
   await saveRegistry(registry);
 }
 
+/**
+ * Si es legítimo hacer `rm -rf` de este `configDir`.
+ *
+ * La regla es de propiedad, no de contenido: la app sólo borra del disco lo que
+ * ella misma creó, que es todo lo que cuelga de `profilesRoot()`
+ * (ver `createProfile`, que arma el configDir con `join(profilesRoot(), id)`).
+ *
+ * Cualquier otra cosa es una carpeta ADOPTADA y se da de baja del registro sin
+ * tocar el disco. Los dos casos que esto protege:
+ *
+ *   - El `~/.claude` real del usuario, que el guard viejo cubría por `isDefault`
+ *     — un campo que sale de un archivo editable.
+ *   - El `configDir` de una cuenta WSL, que apunta a la instalación real de
+ *     Claude Code adentro de la distro: credenciales, historial y ajustes de
+ *     esa persona. El borrado por UNC funciona, así que sin este guard el
+ *     "eliminar cuenta" del panel se la llevaba puesta.
+ */
+export function sePuedeBorrarDelDisco(configDir: string, raizDePerfiles: string): boolean {
+  const rel = relative(raizDePerfiles, configDir);
+  // Vacío = es la raíz misma. '..' al principio = está afuera. Absoluto = otro
+  // volumen o una UNC, que nunca cuelga de la raíz.
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
 export async function deleteProfile(id: string): Promise<void> {
   const registry = await loadRegistry();
   const profile = registry.profiles.find((p) => p.id === id);
@@ -200,8 +224,11 @@ export async function deleteProfile(id: string): Promise<void> {
 
   // Primero el junction, después la carpeta. Al revés, un `rm -rf` que siga el
   // enlace se lleva puesto el pozo entero.
-  await unlinkShared(profile.configDir);
-  await rm(profile.configDir, { recursive: true, force: true });
+  // Antes esto era un `rm` incondicional. Ver `sePuedeBorrarDelDisco`.
+  if (sePuedeBorrarDelDisco(profile.configDir, profilesRoot())) {
+    await unlinkShared(profile.configDir);
+    await rm(profile.configDir, { recursive: true, force: true });
+  }
   registry.profiles = registry.profiles.filter((p) => p.id !== id);
   if (registry.activeProfileId === id) registry.activeProfileId = 'default';
   await saveRegistry(registry);

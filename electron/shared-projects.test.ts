@@ -84,6 +84,18 @@ describe('shareProjects', () => {
       await rm(pozo, { recursive: true, force: true });
     }
   });
+
+  it('una cuenta WSL nunca entra al pozo: no crea el junction', async () => {
+    const pozo = await tmp('cm-pozo-');
+    const cuenta = await tmp('cm-cuenta-');
+    try {
+      await shareProjects(cuenta, pozo, { tipo: 'wsl', distro: 'Ubuntu', home: '/home/vos' });
+      await expect(lstat(join(cuenta, 'projects'))).rejects.toThrow();
+    } finally {
+      await rm(pozo, { recursive: true, force: true });
+      await rm(cuenta, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('unlinkShared', () => {

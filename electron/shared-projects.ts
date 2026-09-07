@@ -1,9 +1,9 @@
 import { lstat, mkdir, readdir, rename, rmdir, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Profile } from '../shared/types';
+import type { Entorno, Profile } from '../shared/types';
 
 /**
- * Hace que todas las cuentas vean las mismas conversaciones.
+ * Hace que todas las cuentas DE WINDOWS vean las mismas conversaciones.
  *
  * Cada cuenta es un CLAUDE_CONFIG_DIR propio, y Claude Code guarda los
  * transcripts en `<configDir>/projects/`. Sin esto, cambiar de cuenta significa
@@ -15,8 +15,20 @@ import type { Profile } from '../shared/types';
  * Se usa un junction de Windows, que no necesita permisos de administrador.
  * Las credenciales, el consumo y el estado siguen siendo de cada cuenta: lo
  * único compartido es `projects/`.
+ *
+ * Las cuentas de WSL quedan afuera: su `projects` vive en ext4 y no hay forma
+ * de enlazarlo que Windows sepa leer. Ver el spec de WSL, §2.
  */
-export async function shareProjects(configDir: string, sharedRoot: string): Promise<void> {
+export async function shareProjects(
+  configDir: string,
+  sharedRoot: string,
+  entorno: Entorno = { tipo: 'windows' }
+): Promise<void> {
+  // Una cuenta WSL nunca entra al pozo. Medido: no se puede crear un junction
+  // de Windows adentro de ext4 ("Función incorrecta"), y un symlink de Linux
+  // hacia /mnt/c lo lee WSL pero NO lo lee Windows por la UNC (1 entrada de
+  // 31). Intentarlo sólo deja basura.
+  if (entorno.tipo === 'wsl') return;
   if (configDir === sharedRoot) return; // la cuenta dueña del pozo
 
   const link = join(configDir, 'projects');
