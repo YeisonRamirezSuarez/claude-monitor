@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { configDirUNC, parseDistros } from './wsl';
+import { configDirUNC, parseDistros, estadoDeRaiz } from './wsl';
 
 describe('parseDistros', () => {
   it('lee la salida de wsl -l -q', () => {
@@ -35,5 +35,47 @@ describe('configDirUNC', () => {
 
   it('rechaza un $HOME que no sea absoluto, en vez de armar una ruta rara', () => {
     expect(() => configDirUNC('Ubuntu', 'home/vos')).toThrow();
+  });
+});
+
+describe('estadoDeRaiz', () => {
+  const base = { distro: 'Ubuntu', corriendo: ['Ubuntu'], hayConfig: true, hayCli: true };
+
+  it('todo bien', () => {
+    expect(estadoDeRaiz(base)).toEqual({ tipo: 'ok' });
+  });
+
+  it('la distro ya no está instalada', () => {
+    expect(estadoDeRaiz({ ...base, distro: 'Debian', instaladas: ['Ubuntu'] })).toEqual({
+      tipo: 'sin-distro',
+      mensaje: 'La distro Debian ya no está'
+    });
+  });
+
+  it('apagada: se avisa y se ofrece encender, no se enciende sola', () => {
+    expect(estadoDeRaiz({ ...base, corriendo: [] })).toEqual({
+      tipo: 'apagada',
+      mensaje: 'Distro apagada'
+    });
+  });
+
+  it('corriendo pero sin ~/.claude', () => {
+    expect(estadoDeRaiz({ ...base, hayConfig: false })).toEqual({
+      tipo: 'sin-config',
+      mensaje: 'No hay Claude Code configurado ahí'
+    });
+  });
+
+  it('corriendo pero sin el CLI en el PATH', () => {
+    expect(estadoDeRaiz({ ...base, hayCli: false })).toEqual({
+      tipo: 'sin-cli',
+      mensaje: 'Falta el CLI en Ubuntu'
+    });
+  });
+
+  it('apagada gana sobre lo que no se pudo mirar: no se puede saber sin encenderla', () => {
+    expect(estadoDeRaiz({ ...base, corriendo: [], hayConfig: false, hayCli: false }).tipo).toBe(
+      'apagada'
+    );
   });
 });

@@ -7,6 +7,8 @@
  * se puede probar sin una distro instalada.
  */
 
+import type { EstadoRaiz } from '../shared/types';
+
 /**
  * Los nombres de distro que salen de `wsl -l -q` (o `wsl -l -q --running`).
  *
@@ -49,4 +51,38 @@ export function configDirUNC(distro: string, home: string): string {
   }
   const partes = home.split('/').filter(Boolean);
   return ['\\\\wsl.localhost', distro, ...partes, '.claude'].join('\\');
+}
+
+/**
+ * En qué estado está la raíz de una cuenta WSL.
+ *
+ * Es pura y recibe lo ya averiguado, para poder probar la tabla entera sin una
+ * distro. El orden de los casos importa: `apagada` va ANTES que `sin-config` y
+ * `sin-cli` porque con la distro apagada esas dos cosas no se pueden mirar sin
+ * encenderla, y encenderla de rebote es exactamente lo que no se hace.
+ */
+export function estadoDeRaiz(args: {
+  distro: string;
+  /** Lo que devolvió `wsl -l -q --running`. */
+  corriendo: string[];
+  /** Lo que devolvió `wsl -l -q`. Si no se pasa, no se chequea. */
+  instaladas?: string[];
+  hayConfig: boolean;
+  hayCli: boolean;
+}): EstadoRaiz {
+  const { distro, corriendo, instaladas, hayConfig, hayCli } = args;
+
+  if (instaladas && !instaladas.includes(distro)) {
+    return { tipo: 'sin-distro', mensaje: `La distro ${distro} ya no está` };
+  }
+  if (!corriendo.includes(distro)) {
+    return { tipo: 'apagada', mensaje: 'Distro apagada' };
+  }
+  if (!hayConfig) {
+    return { tipo: 'sin-config', mensaje: 'No hay Claude Code configurado ahí' };
+  }
+  if (!hayCli) {
+    return { tipo: 'sin-cli', mensaje: `Falta el CLI en ${distro}` };
+  }
+  return { tipo: 'ok' };
 }

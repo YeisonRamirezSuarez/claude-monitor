@@ -1,3 +1,12 @@
+/** En qué estado está la raíz de una cuenta WSL. Ninguno es silencioso: la
+ *  lista vacía sin explicación es justo lo que hay que evitar. */
+export type EstadoRaiz =
+  | { tipo: 'ok' }
+  | { tipo: 'sin-distro'; mensaje: string }
+  | { tipo: 'apagada'; mensaje: string }
+  | { tipo: 'sin-config'; mensaje: string }
+  | { tipo: 'sin-cli'; mensaje: string };
+
 export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
 
 export type Profile = {
