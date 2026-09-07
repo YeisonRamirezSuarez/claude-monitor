@@ -96,6 +96,22 @@ export function tabTitle(label: string): string {
   return label.replace(/[;"]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+/** Comilla simple de POSIX: adentro no se expande nada, y lo único que no se
+ *  puede escapar es la comilla misma — hay que cerrar, escaparla y reabrir.
+ *  Hermano de `psQuote`, y por la misma razón: el nombre de la cuenta lo
+ *  escribe el usuario y termina en la línea de comandos de un shell. */
+export function shQuote(value: string): string {
+  return `'${value.split("'").join("'\\''")}'`;
+}
+
+/** El mismo cartel que `bannerCommand`, del lado Linux: `Write-Host` adentro
+ *  de Ubuntu no es nada. */
+export function bannerBash(command: string, label: string): string {
+  const clean = label.replace(/\s+/g, ' ').trim();
+  if (!clean) return command;
+  return [`printf '\\n  Cuenta: %s\\n\\n' ${shQuote(clean)}`, command].join('\n');
+}
+
 /**
  * Abre una terminal externa en `cwd` ejecutando `command` con
  * CLAUDE_CONFIG_DIR apuntando al perfil activo. Prefiere Windows Terminal;

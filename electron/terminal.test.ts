@@ -1,6 +1,6 @@
 // electron/terminal.test.ts
 import { describe, it, expect } from 'vitest';
-import { bannerCommand, psQuote, sessionEnv, tabTitle } from './terminal';
+import { bannerBash, bannerCommand, psQuote, sessionEnv, shQuote, tabTitle } from './terminal';
 
 describe('sessionEnv', () => {
   it('borra los marcadores heredados de Claude Code (regresión: transcript saving off)', () => {
@@ -60,5 +60,27 @@ describe('bannerCommand', () => {
 describe('tabTitle', () => {
   it('saca lo que wt.exe reparsea', () => {
     expect(tabTitle('personal; algo "raro"')).toBe('personal algo raro');
+  });
+});
+
+describe('shQuote', () => {
+  it("cierra, escapa y reabre: es la unica forma de meter ' en comillas simples", () => {
+    expect(shQuote("cuenta d'algo")).toBe("'cuenta d'\\''algo'");
+  });
+  it('el resto queda literal, que es el punto de la comilla simple', () => {
+    expect(shQuote('$HOME `id` "x"')).toBe('\'$HOME `id` "x"\'');
+  });
+  it('cadena vacía: queda un par de comillas vacío', () => {
+    expect(shQuote('')).toBe("''");
+  });
+});
+
+describe('bannerBash', () => {
+  it('dice con qué cuenta se entra, igual que el de PowerShell', () => {
+    expect(bannerBash('claude', 'Cuenta A')).toContain('Cuenta A');
+    expect(bannerBash('claude', 'Cuenta A')).toContain('claude');
+  });
+  it('sin etiqueta, el comando va solo', () => {
+    expect(bannerBash('claude', '')).toBe('claude');
   });
 });
