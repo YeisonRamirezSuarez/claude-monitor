@@ -91,6 +91,11 @@ export async function unlinkShared(configDir: string): Promise<void> {
 
 export async function shareAll(profiles: Profile[], sharedRoot: string): Promise<void> {
   for (const profile of profiles) {
+    // Ni tocar: leer la UNC de una distro apagada la ENCIENDE (medido: 1,90 s
+    // y 345 MB de vmmemWSL quedan corriendo). shareProjects ya se niega si se
+    // le pasa el entorno, pero acá el filtro va ANTES de llamarla, mirando
+    // sólo el Profile, para no rozar el disco de una cuenta WSL en absoluto.
+    if (profile.entorno?.tipo === 'wsl') continue;
     await shareProjects(profile.configDir, sharedRoot).catch(() => {});
   }
 }

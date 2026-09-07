@@ -3,8 +3,9 @@ import { describe, it, expect } from 'vitest';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { shareProjects, unlinkShared } from './shared-projects';
+import { shareAll, shareProjects, unlinkShared } from './shared-projects';
 import { syncPlugins } from './plugins';
+import type { Profile } from '../shared/types';
 
 async function tmp(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
@@ -135,6 +136,37 @@ describe('unlinkShared', () => {
     } finally {
       await rm(pozo, { recursive: true, force: true });
       await rm(cuenta, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('shareAll', () => {
+  it('engancha la cuenta Windows al pozo y no toca la cuenta WSL', async () => {
+    const pozo = await tmp('cm-pozo-');
+    const cuentaWindows = await tmp('cm-cuenta-win-');
+    const cuentaWsl = await tmp('cm-cuenta-wsl-'); // representa un configDir cualquiera marcado WSL
+    try {
+      const perfiles: Profile[] = [
+        { id: 'w1', name: 'Windows', configDir: cuentaWindows, isDefault: false, entorno: { tipo: 'windows' } },
+        {
+          id: 'u1',
+          name: 'Ubuntu',
+          configDir: cuentaWsl,
+          isDefault: false,
+          entorno: { tipo: 'wsl', distro: 'Ubuntu', home: '/home/vos' }
+        }
+      ];
+
+      await shareAll(perfiles, pozo);
+
+      expect((await lstat(join(cuentaWindows, 'projects'))).isSymbolicLink()).toBe(true);
+      // La cuenta WSL no se tocó: la app nunca escribió nada adentro.
+      await expect(lstat(join(cuentaWsl, 'projects'))).rejects.toThrow();
+    } finally {
+      await unlinkShared(cuentaWindows);
+      await rm(pozo, { recursive: true, force: true });
+      await rm(cuentaWindows, { recursive: true, force: true });
+      await rm(cuentaWsl, { recursive: true, force: true });
     }
   });
 });
