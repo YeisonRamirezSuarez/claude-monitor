@@ -10,22 +10,21 @@ plan `2026-09-07-claude-monitor-wsl.md`.
 
 ## Estado: PENDIENTE DE EJECUCIÓN
 
-El banco **no se pudo correr** en la máquina donde se desarrolló la rama. Medido el
-2026-09-07:
+El banco **no se pudo correr** en la máquina donde se desarrolló la rama, porque ahí no
+hay `claude` instalado adentro de la distro:
 
 ```
-$ wsl -l -v
-  NAME      STATE           VERSION
-* Ubuntu    Stopped         2
-
-$ wsl -d Ubuntu -- true
-  Error catastrófico
-  Código de error: Wsl/Service/CreateInstance/E_UNEXPECTED     (exit 0xFFFFFFFF)
+$ wsl -d Ubuntu --exec bash -lc 'command -v claude'
+  (vacío)
 ```
 
-La distro no levanta, así que los pasos 1 a 4 quedan sin ejecutar y las mediciones del
-paso 3 sin tomar. **Nada de lo que sigue está probado en runtime.** Hay que correrlo
-en la otra PC, donde WSL funciona.
+Sin el CLI, `createWslProfile` se niega a dar de alta la cuenta —a propósito— y el banco
+no puede pasar del paso 1. Hay que correrlo en la otra PC, donde el CLI sí está.
+
+**Nota sobre una medición anterior:** durante el desarrollo se registró que la distro no
+arrancaba (`Wsl/Service/CreateInstance/E_UNEXPECTED`). Eso era **transitorio**: más tarde,
+en la misma máquina, `wsl -d Ubuntu --exec true` devolvió 0 y la distro levantó normal. La
+única razón real por la que el banco no corre es la falta del CLI.
 
 ## Lo que sí quedó medido en esta máquina
 
@@ -38,6 +37,8 @@ diseño de la rebanada de lectura:
 | Codificación de los mensajes de error de `wsl.exe` | UTF-16LE, y salen por **stdout**, no por stderr |
 | `wsl -l -q --running` sin nada corriendo | 0 bytes |
 | `wsl -l -q --running` con el servicio roto | 0 bytes y exit `0xC0000142`; el código lo trata como "no hay nada corriendo", que es el resultado seguro: sin distros corriendo no se lee ninguna raíz y no se enciende nada |
+| Codificación de la salida de un comando de ADENTRO de la distro | UTF-8 — `echo $HOME` devuelve `/home/wposs` sin NULs. Junto con la fila de arriba, es lo que obliga a decidir la codificación mirando los bytes y no a ciegas |
+| `wsl.exe -- <cmd>` contra `wsl.exe --exec <cmd>` | `--` corre el comando a través del shell por defecto de la distro: `-- bash -lc 'X=1; echo "[$X]"'` devuelve `[]`, y un argumento `/home/x; echo INYECTADO` llega re-parseado. `--exec` lo pasa como argv directo: devuelve `[1]` y el argumento hostil llega literal. Todo el proyecto usa `--exec` por esto |
 | Costo de `wsl -l --running` | 0,12 s, sin efecto sobre las distros |
 | Tocar la UNC de una distro apagada | **La enciende**: 1,90 s, la distro queda `Running` con 345 MB de `vmmemWSL` |
 | Lectura por UNC vs NTFS | 16× más lenta (0,94 s vs 0,06 s sobre 12 transcripts / 16,8 MB) |
@@ -47,8 +48,8 @@ La penalización de 16× es la razón por la que el paso 3 mide y no supone.
 ## Paso 1 — Armar un `~/.claude` falso en la distro
 
 ```bash
-wsl -d Ubuntu -- bash -lc 'mkdir -p ~/.claude/projects/banco-de-prueba'
-wsl -d Ubuntu -- bash -lc 'cp /mnt/c/Users/$USER/.claude/projects/*/*.jsonl ~/.claude/projects/banco-de-prueba/ 2>/dev/null; ls ~/.claude/projects/banco-de-prueba | wc -l'
+wsl -d Ubuntu --exec bash -lc 'mkdir -p ~/.claude/projects/banco-de-prueba'
+wsl -d Ubuntu --exec bash -lc 'cp /mnt/c/Users/$USER/.claude/projects/*/*.jsonl ~/.claude/projects/banco-de-prueba/ 2>/dev/null; ls ~/.claude/projects/banco-de-prueba | wc -l'
 ```
 
 El segundo comando imprime cuántos transcripts se copiaron. Si imprime `0`, revisar la
@@ -87,7 +88,7 @@ adivinar, y el costo de adivinar mal acá es código concurrente que nadie neces
 ## Paso 4 — Limpiar
 
 ```bash
-wsl -d Ubuntu -- bash -lc 'rm -rf ~/.claude/projects/banco-de-prueba'
+wsl -d Ubuntu --exec bash -lc 'rm -rf ~/.claude/projects/banco-de-prueba'
 ```
 
 **Cuidado:** esto borra de forma irreversible una carpeta dentro del `$HOME` real del
