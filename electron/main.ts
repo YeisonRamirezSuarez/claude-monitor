@@ -130,19 +130,19 @@ async function requireLogin(profile: Profile): Promise<void> {
  * sesión sería mucho peor.
  */
 async function openTerminalAs(cwd: string, command: string, profile: Profile) {
-  // Frontera provisoria de la rebanada de lectura: `ensureHostScript` y
-  // `readUsage`, más abajo, tocan `configDir` — que en una cuenta WSL es la
-  // UNC, y tocarla enciende la distro. La Task 11 reemplaza este `throw` por
-  // la bifurcación real del lanzador.
-  if (profile.entorno?.tipo === 'wsl') {
-    throw new Error(`Todavía no se puede abrir una terminal para la cuenta de ${profile.entorno.distro}.`);
-  }
+  // `ensureHostScript` no hace nada en una cuenta WSL: el puente de Chrome es
+  // un `.bat` de Windows y la extensión no llega a la sesión de la distro (su
+  // guard está adentro, ver `esWsl` en wsl.ts).
   await ensureHostScript(profile.configDir, await getSharedRoot(), profile.entorno).catch((error) => {
     console.warn('No se pudo fijar la cuenta en el puente de Chrome:', error);
   });
+  // Leer el `configDir` de una cuenta WSL toca la UNC y puede encender la
+  // distro. Acá es lo correcto: el usuario pidió una sesión ADENTRO de ella, y
+  // `openTerminal` la va a encender igual. La regla de no encenderla de rebote
+  // rige para lo que se lee solo (la lista, el refresco), no para esto.
   const usage = await readUsage(profile.configDir).catch(() => null);
   const label = usage?.email ? `${profile.name} · ${usage.email}` : profile.name;
-  await openTerminal(cwd, command, profile.configDir, label);
+  await openTerminal(cwd, command, profile.configDir, label, profile.entorno);
 }
 
 /**

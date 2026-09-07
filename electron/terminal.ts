@@ -1,5 +1,13 @@
 import { spawn, type SpawnOptions } from 'node:child_process';
 import { stat } from 'node:fs/promises';
+// Ciclo a propósito con `wsl.ts`, que a su vez importa `shQuote` y `bannerBash`
+// de acá. Es seguro mientras ninguno de los dos toque un binding del otro en el
+// nivel superior del módulo — ver el comentario largo en `wsl.ts`. Por eso el
+// default de `entorno` en `openTerminal` es el literal `{ tipo: 'windows' }` y
+// no la constante `WINDOWS` de `wsl.ts`: es el único lugar de este archivo que
+// nombraría un binding del otro módulo fuera del cuerpo de una función.
+import { argsDeLanzamiento, posixAWindows, windowsAPosix } from './wsl';
+import type { Entorno } from '../shared/types';
 
 /** Lanza el proceso y se resuelve recién cuando el SO confirma que arrancó.
  *  Sin esto el fallo es asíncrono: `spawn` no lanza, emite 'error', y un
@@ -123,13 +131,20 @@ export function bannerBash(command: string, label: string): string {
  * Rechaza si no se pudo abrir ninguna de las dos, para que el llamador pueda
  * mostrarle el error al usuario en vez de dejarlo mirando una ventana que
  * nunca aparece.
+ *
+ * Con `entorno` de tipo `wsl` la sesión se abre ADENTRO de la distro y todo lo
+ * de acá abajo no corre: ver `abrirEnWsl`. El default deja el camino de Windows
+ * exactamente como estaba para los llamadores que no pasan entorno.
  */
 export async function openTerminal(
   cwd: string,
   command: string,
   configDir: string,
-  label = ''
+  label = '',
+  entorno: Entorno = { tipo: 'windows' }
 ): Promise<void> {
+  if (entorno.tipo === 'wsl') return abrirEnWsl(cwd, command, configDir, label, entorno);
+
   // Un cwd inexistente hace fallar el spawn con el mismo ENOENT que un wt.exe
   // ausente, así que el fallback se dispararía por algo que no puede arreglar.
   // Se chequea antes para dar un error que el usuario entienda: pasa seguido,
@@ -160,4 +175,62 @@ export async function openTerminal(
   }
 
   await launch('powershell.exe', ['-NoExit', '-Command', full], options);
+}
+
+/** El `stat` de acá va contra la traducción a Windows: el `cwd` de un
+ *  transcript de WSL es POSIX y `stat('/home/vos/x')` en Windows siempre falla,
+ *  que es el bug que hoy dice "la carpeta ya no existe". */
+async function abrirEnWsl(
+  cwd: string,
+  command: string,
+  configDir: string,
+  label: string,
+  entorno: Extract<Entorno, { tipo: 'wsl' }>
+): Promise<void> {
+  const { distro, home } = entorno;
+
+  // El `cwd` de una sesión WSL viene POSIX; el del diálogo de carpeta de
+  // Windows viene en forma Windows y hay que traducirlo. Si no es ninguna de
+  // las dos, `windowsAPosix` lanza con un mensaje interno ("No sé traducir esta
+  // ruta a POSIX") que llega tal cual al cartel de error del panel. Se cambia
+  // acá por uno que diga qué pasó en los términos del usuario: la carpeta está,
+  // pero desde adentro de la distro no se ve — es el caso de una unidad de red
+  // mapeada, que WSL no monta en `/mnt`.
+  let cwdPosix: string;
+  try {
+    cwdPosix = cwd.startsWith('/') ? cwd : windowsAPosix(distro, cwd);
+  } catch {
+    throw new Error(
+      `No se puede abrir la terminal: la carpeta "${cwd}" no se ve desde ${distro}. ` +
+        'Desde la distro sólo se llega a sus propias carpetas y a las unidades locales de Windows (C:, D:…).'
+    );
+  }
+
+  // Esto toca la UNC y puede encender la distro, y acá está bien: es el único
+  // lugar del proyecto donde el usuario PIDIÓ una sesión adentro de ella, así
+  // que se va a encender igual dos líneas más abajo.
+  const dir = await stat(posixAWindows(distro, cwdPosix)).catch(() => null);
+  if (!dir?.isDirectory()) {
+    throw new Error(`No se puede abrir la terminal: la carpeta ya no existe (${cwdPosix}).`);
+  }
+
+  const args = argsDeLanzamiento(distro, cwdPosix, `${home}/.claude`, command, label);
+  const options: SpawnOptions = { env: sessionEnv(process.env, configDir), detached: true, stdio: 'ignore' };
+  const title = tabTitle(label);
+
+  // El mismo cuidado que arriba, por el mismo motivo: estos argumentos viajan
+  // por la línea de comandos de `wt.exe`, que trata ';' como separador de
+  // subcomandos y hace su propio seguimiento de comillas. Con cualquiera de los
+  // dos adentro, wt no fallaría —abriría otra cosa, en silencio— así que se va
+  // derecho a `wsl.exe`, que recibe el argv sin que nadie lo reparse.
+  if (!args.some((a) => /[;"]/.test(a))) {
+    try {
+      await launch('wt.exe', [...(title ? ['--title', title] : []), 'wsl.exe', ...args], options);
+      return;
+    } catch {
+      // Windows Terminal no está instalado: se cae a la consola de wsl.exe.
+    }
+  }
+
+  await launch('wsl.exe', args, options);
 }

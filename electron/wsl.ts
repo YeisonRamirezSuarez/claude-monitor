@@ -9,6 +9,15 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+// Ojo: `terminal.ts` importa de acá (`argsDeLanzamiento`, `posixAWindows`,
+// `windowsAPosix`) y esto importa de allá — es un ciclo, a propósito. El cartel
+// de la cuenta y el comillado POSIX son de la terminal y viven ahí; traducir
+// rutas y armar el argv de `wsl.exe` es de WSL y vive acá. Un ciclo de ESM sólo
+// es seguro si NINGUNO de los dos módulos usa un binding del otro en el nivel
+// superior: sólo adentro del cuerpo de una función, que corre cuando los dos
+// módulos ya terminaron de evaluarse. Nada de `const X = shQuote(...)` acá ni de
+// `= WINDOWS` como default de parámetro allá.
+import { bannerBash, shQuote } from './terminal';
 import type { Entorno, EstadoRaiz } from '../shared/types';
 
 const run = promisify(execFile);
@@ -258,4 +267,32 @@ export function windowsAPosix(distro: string, p: string): string {
     return ['/mnt', disco[1].toLowerCase(), ...resto].join('/');
   }
   throw new Error(`No sé traducir esta ruta a POSIX: ${p}`);
+}
+
+/**
+ * El argv de `wsl.exe` para abrir una sesión adentro de la distro.
+ *
+ * Dos decisiones que valen la pena:
+ *
+ *   - El `--cd` va como ARGUMENTO, no por la línea del shell. El `cwd` sale de
+ *     un `.jsonl` y no es confiable; así nunca lo parsea un shell.
+ *   - `CLAUDE_CONFIG_DIR` va por `export` adentro del script y no por `WSLENV`.
+ *     `WSLENV` funciona (medido) pero es una variable GLOBAL del proceso que
+ *     habría que componer sin pisar lo que el usuario ya tenga: un merge frágil
+ *     por una ganancia nula.
+ *
+ * `bash -lc` y no `bash -c`: el PATH con `claude` adentro suele venir del
+ * perfil de login (nvm y compañía).
+ */
+export function argsDeLanzamiento(
+  distro: string,
+  cwdPosix: string,
+  configDirPosix: string,
+  command: string,
+  label: string
+): string[] {
+  const script = [`export CLAUDE_CONFIG_DIR=${shQuote(configDirPosix)}`, bannerBash(command, label)].join(
+    '\n'
+  );
+  return ['-d', distro, '--cd', cwdPosix, '--', 'bash', '-lc', script];
 }

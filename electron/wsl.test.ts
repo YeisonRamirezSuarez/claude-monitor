@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   TIMEOUT_WSL,
   argsDeConsulta,
+  argsDeLanzamiento,
   configDirUNC,
   decodificarSalidaWsl,
   esWsl,
@@ -244,5 +245,31 @@ describe('windowsAPosix', () => {
 
   it('letra de unidad en minúscula', () => {
     expect(windowsAPosix('Ubuntu', 'c:\\Users\\x')).toBe('/mnt/c/Users/x');
+  });
+});
+
+describe('argsDeLanzamiento', () => {
+  const args = argsDeLanzamiento('Ubuntu', '/home/vos/proy', '/home/vos/.claude', 'claude', 'A');
+
+  it('el cwd va como argumento de wsl.exe, nunca por la linea del shell', () => {
+    // El cwd sale de un .jsonl y no es confiable.
+    expect(args.slice(0, 4)).toEqual(['-d', 'Ubuntu', '--cd', '/home/vos/proy']);
+  });
+
+  it('bash -lc: hace falta el perfil de login para que claude este en el PATH', () => {
+    expect(args).toContain('-lc');
+    expect(args[args.indexOf('-lc') - 1]).toBe('bash');
+  });
+
+  it('CLAUDE_CONFIG_DIR va por export adentro, no por WSLENV', () => {
+    // WSLENV es una variable global del proceso y habria que componerla sin
+    // pisar lo que el usuario tenga. El export no tiene ese problema.
+    const script = args[args.length - 1];
+    expect(script).toContain("export CLAUDE_CONFIG_DIR='/home/vos/.claude'");
+    expect(args.join(' ')).not.toContain('WSLENV');
+  });
+
+  it('la ruta del config va en POSIX, no en UNC', () => {
+    expect(args[args.length - 1]).not.toContain('wsl.localhost');
   });
 });
