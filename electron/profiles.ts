@@ -7,7 +7,7 @@ import type { Profile, ProfileWithStatus } from '../shared/types';
 import { ensureAll, ensureHostScript } from './chrome-host';
 import { chromeStatus } from './chrome-launch';
 import { isLoggedIn, sessionExpiry } from './credentials';
-import { markOnboardingDone } from './onboarding';
+import { markAllOnboardingDone } from './onboarding';
 import { syncAll, syncPlugins } from './plugins';
 import { effectiveActiveId, visibleProfiles } from './profile-visibility';
 import { avisoDeCupo } from './relevo';
@@ -139,10 +139,9 @@ export async function syncAllPlugins(): Promise<void> {
  *  este cambio, que arrancaban pidiendo elegir método de ingreso. */
 export async function markOnboardingAll(): Promise<void> {
   const registry = await loadRegistry();
-  const sharedRoot = await getSharedRoot();
-  for (const profile of registry.profiles) {
-    await markOnboardingDone(profile.configDir, sharedRoot).catch(() => {});
-  }
+  // El guard de WSL vive en markAllOnboardingDone, junto al resto de la
+  // lógica de onboarding, no acá.
+  await markAllOnboardingDone(registry.profiles, await getSharedRoot());
 }
 
 /** Deja el puente de Chrome de cada cuenta apuntando a su propia carpeta, para

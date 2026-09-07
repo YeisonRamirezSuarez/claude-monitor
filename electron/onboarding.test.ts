@@ -3,7 +3,8 @@ import { describe, it, expect } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { markOnboardingDone, readOnboardingVersion, withOnboardingDone } from './onboarding';
+import { markAllOnboardingDone, markOnboardingDone, readOnboardingVersion, withOnboardingDone } from './onboarding';
+import type { Profile } from '../shared/types';
 
 const CUENTA = JSON.stringify({
   oauthAccount: { emailAddress: 'yo@ejemplo.com' },
@@ -86,6 +87,40 @@ describe('markOnboardingDone', () => {
       expect(await markOnboardingDone(dir)).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('markAllOnboardingDone', () => {
+  it('marca la cuenta Windows y no toca la cuenta WSL', async () => {
+    const cuentaWindows = await mkdtemp(join(tmpdir(), 'cm-cuenta-win-'));
+    // Directorio temporal cualquiera: representa el configDir de una cuenta
+    // WSL sin usar ninguna UNC ni ninguna distro real.
+    const cuentaWsl = await mkdtemp(join(tmpdir(), 'cm-cuenta-wsl-'));
+    try {
+      await writeFile(join(cuentaWindows, '.claude.json'), CUENTA);
+      await writeFile(join(cuentaWsl, '.claude.json'), CUENTA);
+
+      const perfiles: Profile[] = [
+        { id: 'w1', name: 'Windows', configDir: cuentaWindows, isDefault: false, entorno: { tipo: 'windows' } },
+        {
+          id: 'u1',
+          name: 'Ubuntu',
+          configDir: cuentaWsl,
+          isDefault: false,
+          entorno: { tipo: 'wsl', distro: 'Ubuntu', home: '/home/vos' }
+        }
+      ];
+
+      await markAllOnboardingDone(perfiles);
+
+      const win = JSON.parse(await readFile(join(cuentaWindows, '.claude.json'), 'utf8'));
+      expect(win.hasCompletedOnboarding).toBe(true);
+      // La cuenta WSL no se tocó: sigue exactamente como estaba.
+      expect(await readFile(join(cuentaWsl, '.claude.json'), 'utf8')).toBe(CUENTA);
+    } finally {
+      await rm(cuentaWindows, { recursive: true, force: true });
+      await rm(cuentaWsl, { recursive: true, force: true });
     }
   });
 });

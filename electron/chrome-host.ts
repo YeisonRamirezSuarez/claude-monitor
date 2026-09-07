@@ -143,6 +143,10 @@ export async function ensureHostScript(configDir: string, sharedRoot?: string): 
  */
 export async function ensureAll(profiles: Profile[], sharedRoot: string): Promise<void> {
   for (const profile of profiles) {
+    // Ni tocar: leer/escribir la UNC de una distro apagada la ENCIENDE (medido:
+    // 1,90 s, 345 MB de vmmemWSL). El puente de Chrome es de Windows: no hay
+    // .bat ni emparejamiento que escribirle al ~/.claude real de esa persona.
+    if (profile.entorno?.tipo === 'wsl') continue;
     await ensureHostScript(profile.configDir, sharedRoot).catch(() => {});
     await pruneStalePairing(profile.configDir, profile.id).catch(() => {});
   }

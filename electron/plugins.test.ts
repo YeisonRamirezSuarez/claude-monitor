@@ -3,8 +3,9 @@ import { describe, it, expect } from 'vitest';
 import { mkdtemp, mkdir, writeFile, readFile, rm, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mergeSettings, syncPlugins } from './plugins';
+import { mergeSettings, syncAll, syncPlugins } from './plugins';
 import { unlinkShared } from './shared-projects';
+import type { Profile } from '../shared/types';
 
 const tmp = (prefix: string) => mkdtemp(join(tmpdir(), prefix));
 
@@ -126,6 +127,42 @@ describe('syncPlugins', () => {
       await unlinkShared(cuenta);
       await rm(pozo, { recursive: true, force: true });
       await rm(cuenta, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('syncAll', () => {
+  it('engancha la cuenta Windows a los plugins del pozo y no toca la cuenta WSL', async () => {
+    const pozo = await tmp('cm-pozo-');
+    const cuentaWindows = await tmp('cm-cuenta-win-');
+    // Directorio temporal cualquiera: representa el configDir de una cuenta
+    // WSL sin usar ninguna UNC ni ninguna distro real.
+    const cuentaWsl = await tmp('cm-cuenta-wsl-');
+    try {
+      await writeFile(join(pozo, 'settings.json'), POZO);
+
+      const perfiles: Profile[] = [
+        { id: 'w1', name: 'Windows', configDir: cuentaWindows, isDefault: false, entorno: { tipo: 'windows' } },
+        {
+          id: 'u1',
+          name: 'Ubuntu',
+          configDir: cuentaWsl,
+          isDefault: false,
+          entorno: { tipo: 'wsl', distro: 'Ubuntu', home: '/home/vos' }
+        }
+      ];
+
+      await syncAll(perfiles, pozo);
+
+      expect((await lstat(join(cuentaWindows, 'plugins'))).isSymbolicLink()).toBe(true);
+      // La cuenta WSL no se tocó: no hay junction ni settings.json escrito.
+      await expect(lstat(join(cuentaWsl, 'plugins'))).rejects.toThrow();
+      await expect(readFile(join(cuentaWsl, 'settings.json'), 'utf8')).rejects.toThrow();
+    } finally {
+      await unlinkShared(cuentaWindows);
+      await rm(pozo, { recursive: true, force: true });
+      await rm(cuentaWindows, { recursive: true, force: true });
+      await rm(cuentaWsl, { recursive: true, force: true });
     }
   });
 });

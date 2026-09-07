@@ -1,5 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { Profile } from '../shared/types';
 
 /**
  * Marca la cuenta como ya presentada, para que el CLI no corra el arranque de
@@ -80,4 +81,15 @@ export async function markOnboardingDone(configDir: string, sharedRoot?: string)
   if (patched === null) return false;
   await writeFile(path, patched, 'utf8');
   return true;
+}
+
+/** Deja todas las cuentas presentadas de una. Las de WSL quedan afuera: leer
+ *  la UNC de una distro apagada la ENCIENDE (medido: 1,90 s, 345 MB de
+ *  vmmemWSL), y la marca de onboarding es de Windows — escribirla ahí
+ *  ensuciaría el ~/.claude real de esa persona en Ubuntu. */
+export async function markAllOnboardingDone(profiles: Profile[], sharedRoot?: string): Promise<void> {
+  for (const profile of profiles) {
+    if (profile.entorno?.tipo === 'wsl') continue;
+    await markOnboardingDone(profile.configDir, sharedRoot).catch(() => {});
+  }
 }

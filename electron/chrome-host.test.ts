@@ -3,7 +3,8 @@ import { describe, it, expect } from 'vitest';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildScript, ensureHostScript, parseClaudeExe, patchScript } from './chrome-host';
+import { buildScript, ensureAll, ensureHostScript, parseClaudeExe, patchScript } from './chrome-host';
+import type { Profile } from '../shared/types';
 
 /** El `.bat` real que genera Claude Code, tal cual está en disco. */
 const ORIGINAL = [
@@ -115,6 +116,46 @@ describe('ensureHostScript', () => {
       expect(await ensureHostScript(cuenta)).toBe(false);
     } finally {
       await rm(cuenta, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('ensureAll', () => {
+  it('parcha el puente de la cuenta Windows y no toca la cuenta WSL', async () => {
+    const pozo = await tmp('cm-pozo-');
+    const cuentaWindows = await tmp('cm-cuenta-win-');
+    // Directorio temporal cualquiera: representa el configDir de una cuenta
+    // WSL sin usar ninguna UNC ni ninguna distro real.
+    const cuentaWsl = await tmp('cm-cuenta-wsl-');
+    try {
+      await mkdir(join(cuentaWindows, 'chrome'), { recursive: true });
+      await writeFile(join(cuentaWindows, 'chrome', 'chrome-native-host.bat'), ORIGINAL);
+      await mkdir(join(cuentaWsl, 'chrome'), { recursive: true });
+      await writeFile(join(cuentaWsl, 'chrome', 'chrome-native-host.bat'), ORIGINAL);
+
+      const perfiles: Profile[] = [
+        { id: 'w1', name: 'Windows', configDir: cuentaWindows, isDefault: false, entorno: { tipo: 'windows' } },
+        {
+          id: 'u1',
+          name: 'Ubuntu',
+          configDir: cuentaWsl,
+          isDefault: false,
+          entorno: { tipo: 'wsl', distro: 'Ubuntu', home: '/home/vos' }
+        }
+      ];
+
+      await ensureAll(perfiles, pozo);
+
+      expect(await readFile(join(cuentaWindows, 'chrome', 'chrome-native-host.bat'), 'utf8')).toContain(
+        `set "CLAUDE_CONFIG_DIR=${cuentaWindows}"`
+      );
+      // La cuenta WSL no se tocó: su .bat sigue siendo el original, sin parchar.
+      expect(await readFile(join(cuentaWsl, 'chrome', 'chrome-native-host.bat'), 'utf8')).toBe(ORIGINAL);
+      await expect(readFile(`${join(cuentaWsl, 'chrome', 'chrome-native-host.bat')}.bak-claude-monitor`, 'utf8')).rejects.toThrow();
+    } finally {
+      await rm(pozo, { recursive: true, force: true });
+      await rm(cuentaWindows, { recursive: true, force: true });
+      await rm(cuentaWsl, { recursive: true, force: true });
     }
   });
 });
