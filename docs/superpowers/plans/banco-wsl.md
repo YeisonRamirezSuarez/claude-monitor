@@ -70,8 +70,28 @@ Con `npm run dev`:
 3. Apretar "Encender". Aparecen las sesiones del banco, con el chip `Ubuntu`.
 4. Abrir el transcript de una: tiene que mostrar el contenido real.
 5. La columna de consumo se puebla.
-6. Reanudar / crear / borrar sobre una sesión de WSL: deshabilitados, con el motivo en
-   el tooltip.
+6. Las fronteras, que **no** son las mismas para las tres acciones. Con una sesión de
+   WSL en la lista:
+   - **"Reanudar en terminal" anda.** Abre `wsl.exe` con `--cd` y `--exec` sobre la
+     distro de esa sesión, con la cuenta de esa distro y no con la activa. En la
+     terminal, `pwd` tiene que dar el `cwd` de la sesión y la conversación tiene que
+     retomar donde iba.
+   - **"Nueva en terminal…" anda**, con la cuenta activa. Probar los dos destinos del
+     diálogo de carpeta:
+     - una carpeta de adentro de la distro (por su UNC `\\wsl.localhost\<distro>\…`):
+       abre en esa misma ruta POSIX;
+     - una carpeta de **Windows** (por ejemplo `C:\proy\x`): tiene que abrir en
+       `/mnt/c/proy/x`. Es el caso que más fácil se rompe, porque la traducción vive
+       en un solo lugar (`abrirEnWsl`) y el diálogo siempre devuelve ruta de Windows.
+   - **"Borrar" sigue deshabilitado**, con el motivo en el tooltip: borrar sesiones de
+     WSL no está habilitado en esta rebanada (§9 del spec — decisión de producto, no
+     una imposibilidad técnica: por UNC funcionaría).
+   - **Todo lo de Desktop sigue deshabilitado**, con el motivo en el tooltip:
+     "Reanudar en Desktop" sobre una sesión de WSL, y "Nueva en Desktop…" /
+     el "Desktop" del "+" cuando la cuenta activa es de WSL. Es permanente (§7):
+     Desktop es una app de Windows y no puede hospedar una sesión de la distro.
+   - Los cuatro botones deshabilitados tienen que **verse** deshabilitados (atenuados,
+     sin encenderse al pasar el mouse), no sólo comportarse como tales.
 
 ## Paso 3 — Medir la primera corrida de `tokensFor`
 
