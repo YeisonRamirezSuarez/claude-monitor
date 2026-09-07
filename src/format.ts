@@ -1,4 +1,52 @@
-import type { Entorno } from '../shared/types';
+import type { Entorno, Raiz } from '../shared/types';
+
+/**
+ * Si lo que la app afirma de una cuenta salió de mirar su disco, o de negarse a
+ * mirarlo.
+ *
+ * `sinMirar` (`electron/profiles.ts`) devuelve `exists:false` y
+ * `authenticated:false` para una cuenta a la que se NEGÓ a leerle el disco:
+ * tocar la UNC de una distro apagada la enciende (1,90 s, 345 MB de
+ * `vmmemWSL`). Leer esos `false` como hechos es afirmar cosas que nadie
+ * verificó — "sin sesión", "(no disponible)"— sobre una cuenta que puede estar
+ * perfectamente autorizada.
+ *
+ * Windows siempre se mira. En WSL depende del estado de la raíz: `apagada` y
+ * `sin-distro` son exactamente los dos casos en que no se leyó nada;
+ * `sin-config` y `sin-cli` significan que la distro estaba arriba y sí se miró.
+ * Sin raíz todavía (el primer refresco, antes de que llegue la lista) tampoco
+ * se miró nada.
+ */
+export function seLeMiroElDisco(entorno: Entorno | undefined, raiz: Raiz | undefined): boolean {
+  if (entorno?.tipo !== 'wsl') return true;
+  if (!raiz) return false;
+  return raiz.estado.tipo !== 'apagada' && raiz.estado.tipo !== 'sin-distro';
+}
+
+/**
+ * Qué se sabe de la sesión de una cuenta: cuatro estados, no tres.
+ *
+ * `sin-mirar` es el que faltaba, y es distinto de `sin-sesion` en lo único que
+ * importa: uno es un dato y el otro es la ausencia de un dato. Ver
+ * `seLeMiroElDisco`.
+ */
+export function estadoDeSesion(
+  cuenta: { entorno?: Entorno; authenticated: boolean; authExpiresAt: number | null },
+  raiz: Raiz | undefined
+): 'sin-mirar' | 'sin-sesion' | 'suposicion' | 'viva' {
+  if (!seLeMiroElDisco(cuenta.entorno, raiz)) return 'sin-mirar';
+  if (!cuenta.authenticated) return 'sin-sesion';
+  return cuenta.authExpiresAt === null ? 'suposicion' : 'viva';
+}
+
+/**
+ * Si tiene sentido hablarle a esta cuenta de la extensión de Chrome.
+ *
+ * Nunca para una cuenta de WSL: `chrome.extension` y `chrome.loggedIn` no van a
+ * ser `true` ahí jamás —el puente es un `.bat` de Windows que `ensureHostScript`
+ * se niega a escribir, y el CLI corre en Linux—, así que el cartel "primero hay
+ * que instalar la extensión…" no sólo es falso: es permanente. */
+export const hablarDeChrome = (entorno: Entorno | undefined): boolean => entorno?.tipo !== 'wsl';
 
 /** La marca de origen de una sesión. Vacía en Windows a propósito: son la
  *  mayoría, y marcarlas todas convierte la marca en ruido. */

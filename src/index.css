@@ -242,6 +242,14 @@ button.primary:hover {
   background: #3d4a63;
 }
 
+/* Hueco: no es que no haya sesión, es que no se pudo mirar —la distro está
+   apagada y tocarle la UNC la encendería—. Sin relleno justamente porque no hay
+   nada adentro que afirmar. */
+.dot.sin-mirar {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px #6b7a95;
+}
+
 /* Ni verde ni apagado: la sesión se da por viva pero nadie lo confirmó. */
 .dot.guess {
   background: var(--warn);
@@ -542,6 +550,24 @@ select:focus {
 .card .actions button:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+
+/* Los otros dos botones que se pueden deshabilitar y no cuelgan de
+   `.card .actions`: "Nueva en Desktop…" de la barra y el "Desktop" del
+   desplegable del "+" de un proyecto. Sin esto se ven igual que los
+   habilitados y no hacen nada al tocarlos — que es exactamente la lectura de
+   "esto está roto" que el motivo del tooltip trata de evitar. El `:hover` se
+   apaga junto con ellos: iluminarse al pasar por encima es la otra mitad de la
+   promesa. */
+.toolbar button:disabled,
+.projects .nueva-en button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.toolbar button:disabled:hover,
+.projects .nueva-en button:disabled:hover {
+  background: none;
 }
 
 /* --- barras de scroll --- */

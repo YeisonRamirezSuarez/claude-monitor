@@ -1,7 +1,14 @@
 import { useMemo, useState } from 'react';
 import type { AccountUsage, Entorno, ProfileList, ProfileWithStatus, Raiz, SessionMeta } from '../shared/types';
 import AccountIcon from './AccountIcon';
-import { motivoDeshabilitado, projectName, relativeDate } from './format';
+import {
+  estadoDeSesion,
+  hablarDeChrome,
+  motivoDeshabilitado,
+  projectName,
+  relativeDate,
+  seLeMiroElDisco
+} from './format';
 
 const FULL_DATE = new Intl.DateTimeFormat('es', { dateStyle: 'medium', timeStyle: 'short' });
 
@@ -95,24 +102,42 @@ function projectLabel(sessions: SessionMeta[]): string {
 }
 
 /**
- * El punto que acompaña al nombre, en tres estados y no en dos.
+ * El punto que acompaña al nombre, en cuatro estados y no en dos.
  *
  * `ok` es una sesión con fecha de vencimiento en el futuro: se sabe. `guess` es
  * una sesión que se da por viva porque hay token de renovación, pero el archivo
  * no dice hasta cuándo — el CLI la puede rechazar y la app no se entera hasta
  * que la terminal lo diga. Pintarlos iguales era prometer de más.
+ *
+ * `sin-mirar` es el cuarto, y es el que evita mentir: con la distro de una
+ * cuenta WSL apagada nadie le leyó el disco, así que el `authenticated:false`
+ * que llega de `sinMirar` no significa "sin sesión" sino "no se sabe". Ver
+ * `estadoDeSesion` en `format.ts`, donde está la decisión y su test.
  */
-function dotState(profile: ProfileWithStatus): { className: string; title: string } {
-  if (!profile.authenticated) return { className: 'dot off', title: 'Sin sesión: hay que autorizar el CLI.' };
-  if (profile.authExpiresAt === null) {
-    return {
-      className: 'dot guess',
-      title:
-        'Sesión probablemente viva: hay token de renovación, pero el archivo no dice hasta cuándo. ' +
-        'Si venció, lo vas a ver recién al abrir la terminal.'
-    };
+function dotState(profile: ProfileWithStatus, raiz: Raiz | undefined): { className: string; title: string } {
+  switch (estadoDeSesion(profile, raiz)) {
+    case 'sin-mirar':
+      return {
+        className: 'dot sin-mirar',
+        title:
+          `No se pudo mirar: ${(raiz?.estado.tipo !== 'ok' && raiz?.estado.mensaje) || 'la distro está apagada'}. ` +
+          'La app no la enciende sola para averiguarlo — tocá "Encender" y vuelve a mirar.'
+      };
+    case 'sin-sesion':
+      return { className: 'dot off', title: 'Sin sesión: hay que autorizar el CLI.' };
+    case 'suposicion':
+      return {
+        className: 'dot guess',
+        title:
+          'Sesión probablemente viva: hay token de renovación, pero el archivo no dice hasta cuándo. ' +
+          'Si venció, lo vas a ver recién al abrir la terminal.'
+      };
+    default:
+      return {
+        className: 'dot ok',
+        title: `Sesión válida hasta ${FULL_DATE.format(new Date(profile.authExpiresAt as number))}.`
+      };
   }
-  return { className: 'dot ok', title: `Sesión válida hasta ${FULL_DATE.format(new Date(profile.authExpiresAt))}.` };
 }
 
 /**
@@ -184,8 +209,16 @@ function ProfileBlock({
     !profile.chrome.loggedIn && 'iniciar sesión en claude.ai'
   ].filter((f): f is string => Boolean(f));
   const listo = falta.length === 0;
-  const dot = dotState(profile);
+  const dot = dotState(profile, raiz);
   const chrome = chromeLabel(profile, listo, falta);
+  // Si lo que se afirma de esta cuenta salió de leerle el disco. Con la distro
+  // apagada NO: `sinMirar` devuelve exists/authenticated en false porque se
+  // negó a leer, no porque haya leído. Ver `seLeMiroElDisco` en `format.ts`.
+  const seMiro = seLeMiroElDisco(profile.entorno, raiz);
+  // Y si tiene sentido nombrarle la extensión de Chrome. En una cuenta WSL
+  // nunca: el puente no llega a la distro, así que ese cartel no sólo sería
+  // falso, sería permanente.
+  const conChrome = hablarDeChrome(profile.entorno);
 
   return (
     <li className={`profile${isActive ? ' active' : ''}`}>
@@ -200,7 +233,10 @@ function ProfileBlock({
             <span className={dot.className} title={dot.title} />
             <span className="profile-label">
               {profile.name}
-              {!profile.exists && <em> (no disponible)</em>}
+              {/* "(no disponible)" es una afirmación sobre el disco, así que
+                  sólo se dice cuando se pudo mirar. Con la distro apagada, lo
+                  que corresponde decir lo dice la línea de estado de la raíz. */}
+              {seMiro && !profile.exists && <em> (no disponible)</em>}
             </span>
           </span>
         ) : (
@@ -213,7 +249,10 @@ function ProfileBlock({
             <span className={dot.className} title={dot.title} />
             <span className="profile-label">
               {profile.name}
-              {!profile.exists && <em> (no disponible)</em>}
+              {/* "(no disponible)" es una afirmación sobre el disco, así que
+                  sólo se dice cuando se pudo mirar. Con la distro apagada, lo
+                  que corresponde decir lo dice la línea de estado de la raíz. */}
+              {seMiro && !profile.exists && <em> (no disponible)</em>}
             </span>
           </button>
         )}
@@ -227,9 +266,16 @@ function ProfileBlock({
           <button
             className="link"
             title={
-              falta.length > 0
-                ? `Configurar "${profile.name}". Falta: ${falta.join(' y ')}, y autorizar el CLI.`
-                : `Configurar "${profile.name}". Sólo falta autorizar el CLI.`
+              !conChrome
+                ? // En WSL el trámite es uno solo —autorizar el CLI adentro de
+                  // la distro— y los pasos de Chrome ni se corren (ver
+                  // `profiles:login` en main.ts). Y con la distro apagada ni
+                  // siquiera se sabe si hace falta.
+                  `Configurar "${profile.name}": autoriza el CLI adentro de ${distro}. ` +
+                  (seMiro ? '' : 'Con la distro apagada no se pudo mirar si ya está autorizado.')
+                : falta.length > 0
+                  ? `Configurar "${profile.name}". Falta: ${falta.join(' y ')}, y autorizar el CLI.`
+                  : `Configurar "${profile.name}". Sólo falta autorizar el CLI.`
             }
             onClick={() => onLogin(profile.id)}
           >
@@ -266,7 +312,12 @@ function ProfileBlock({
           </button>
         )}
       </div>
-      {!listo && profile.authenticated && (
+      {/* Toda la prosa de la extensión es de Windows. En una cuenta WSL
+          `chrome.extension` y `chrome.loggedIn` no van a ser true nunca —el
+          puente es un `.bat` de Windows y el CLI corre en Linux—, así que este
+          cartel sería permanente y falso incluso con la distro encendida y la
+          cuenta autorizada. Ver `hablarDeChrome` en `format.ts`. */}
+      {conChrome && !listo && profile.authenticated && (
         <p className="chrome-falta">
           Para la extensión falta: {falta.join(' y ')}. Tocá “Chrome”.
           {!profile.chrome.verified && profile.chrome.seenAt > 0 && (
@@ -274,11 +325,16 @@ function ProfileBlock({
           )}
         </p>
       )}
-      {!profile.authenticated && (
+      {/* Y esto sólo se dice cuando se pudo mirar: con la distro apagada,
+          `authenticated:false` no significa "sin sesión" sino "no se sabe", y
+          quien habla es la línea de estado de la raíz, acá abajo. */}
+      {!profile.authenticated && seMiro && (
         <p className="chrome-falta">
-          {falta.length > 0
-            ? `Tocá “Configurar Claude”: primero hay que ${falta.join(', y después ')} en el Chrome de esta cuenta.`
-            : 'Tocá “Configurar Claude” para autorizar el CLI y poder usar esta cuenta.'}
+          {!conChrome
+            ? `Tocá “Configurar Claude” para autorizar el CLI adentro de ${distro} y poder usar esta cuenta.`
+            : falta.length > 0
+              ? `Tocá “Configurar Claude”: primero hay que ${falta.join(', y después ')} en el Chrome de esta cuenta.`
+              : 'Tocá “Configurar Claude” para autorizar el CLI y poder usar esta cuenta.'}
         </p>
       )}
       {/* El estado de la raíz de esta cuenta, cuando vive en WSL y no está
@@ -322,8 +378,13 @@ export default function Sidebar(props: Props) {
   // rastro a cuál estaba en uso.
   const active = profileList?.profiles.find((p) => p.id === profileList.activeProfileId) ?? null;
   const others = profileList?.profiles.filter((p) => p.id !== profileList.activeProfileId) ?? [];
-  // Crear con la cuenta activa necesita el lanzador de WSL (rebanada 2,
-  // todavía no construido). Windows por defecto si no hay cuenta activa,
+  // La cuenta que se está por quitar: lo que se borra —y lo que no— depende de
+  // dónde vive su carpeta. Ver el texto de la confirmación.
+  const aBorrar = profileList?.profiles.find((p) => p.id === confirmDelete) ?? null;
+  // El entorno de la cuenta activa, que es lo que decide si "Desktop" del
+  // desplegable del "+" va deshabilitado: Desktop es una app de Windows y no
+  // puede hospedar una sesión de la distro (§7). Crear en terminal sí anda con
+  // el lanzador de WSL (Task 14). Windows por defecto si no hay cuenta activa,
   // igual que en SessionList.
   const activeProfileEntorno: Entorno = active?.entorno ?? { tipo: 'windows' };
 
@@ -445,9 +506,16 @@ export default function Sidebar(props: Props) {
 
       {confirmDelete && (
         <div className="confirm">
+          {/* Para una cuenta WSL las tres promesas del texto de siempre son
+              falsas: `sePuedeBorrarDelDisco` impide tocar su carpeta (es
+              adoptada, no la creó la app), el login sobrevive porque vive ahí
+              adentro, y sus conversaciones nunca fueron parte del pozo
+              compartido. Con el texto equivocado, quitarla da miedo de perder
+              el ~/.claude real de Linux. */}
           <p>
-            ¿Quitar la cuenta? Se borra su configuración y su sesión iniciada. Las conversaciones no se
-            tocan: son compartidas por todas las cuentas.
+            {aBorrar?.entorno?.tipo === 'wsl'
+              ? `¿Quitar la cuenta? Sólo se da de baja del panel: su ~/.claude adentro de ${aBorrar.entorno.distro} —configuración, sesión iniciada y conversaciones— queda intacto. Volver a agregarla la recupera tal cual.`
+              : '¿Quitar la cuenta? Se borra su configuración y su sesión iniciada. Las conversaciones no se tocan: son compartidas por todas las cuentas.'}
           </p>
           <button
             className="danger"
