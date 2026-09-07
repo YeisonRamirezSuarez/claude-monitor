@@ -4,6 +4,7 @@ import {
   argsDeConsulta,
   argsDeLanzamiento,
   configDirUNC,
+  cuentaParaSesion,
   decodificarSalidaWsl,
   esWsl,
   parseDistros,
@@ -245,6 +246,28 @@ describe('windowsAPosix', () => {
 
   it('letra de unidad en minúscula', () => {
     expect(windowsAPosix('Ubuntu', 'c:\\Users\\x')).toBe('/mnt/c/Users/x');
+  });
+});
+
+describe('cuentaParaSesion', () => {
+  const cuentas = [
+    { id: 'w1', entorno: { tipo: 'windows' } },
+    { id: 'u1', entorno: { tipo: 'wsl', distro: 'Ubuntu', home: '/home/vos' } }
+  ] as any;
+
+  it('una sesión de WSL se abre con la cuenta de esa distro, no con la activa', () => {
+    const s = { entorno: { tipo: 'wsl', distro: 'Ubuntu', home: '/home/vos' } } as any;
+    expect(cuentaParaSesion(s, cuentas, 'w1')?.id).toBe('u1');
+  });
+
+  it('una sesión de Windows se abre con la cuenta activa, como hoy', () => {
+    const s = { entorno: { tipo: 'windows' } } as any;
+    expect(cuentaParaSesion(s, cuentas, 'w1')?.id).toBe('w1');
+  });
+
+  it('si la cuenta de esa distro ya no está, no se inventa otra', () => {
+    const s = { entorno: { tipo: 'wsl', distro: 'Debian', home: '/home/v' } } as any;
+    expect(cuentaParaSesion(s, cuentas, 'w1')).toBeNull();
   });
 });
 

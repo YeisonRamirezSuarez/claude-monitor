@@ -26,6 +26,25 @@ const run = promisify(execFile);
 export const WINDOWS: Entorno = { tipo: 'windows' };
 
 /**
+ * Con qué cuenta se abre una sesión.
+ *
+ * Para Windows es la activa, como siempre: cuál usar es decisión del usuario y
+ * `profileForWork` no elige por él. Para una sesión de WSL NO puede ser la
+ * activa: el transcript vive en la raíz de esa distro y sólo esa cuenta sabe
+ * llegar. Devuelve `null` si esa cuenta ya no existe, para poder explicarlo en
+ * vez de abrir una terminal con la cuenta equivocada.
+ */
+export function cuentaParaSesion<T extends { id: string; entorno?: Entorno }>(
+  sesion: { entorno: Entorno },
+  cuentas: T[],
+  activaId: string
+): T | null {
+  if (sesion.entorno.tipo !== 'wsl') return cuentas.find((c) => c.id === activaId) ?? null;
+  const { distro } = sesion.entorno;
+  return cuentas.find((c) => c.entorno?.tipo === 'wsl' && c.entorno.distro === distro) ?? null;
+}
+
+/**
  * Si esta cuenta vive en una distro.
  *
  * Centraliza el chequeo: cada punto de escritura por cuenta —el pozo de

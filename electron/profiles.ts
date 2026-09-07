@@ -137,6 +137,24 @@ export async function getActiveProfile(): Promise<Profile> {
   return registry.profiles.find((p) => p.id === id) ?? registry.profiles[0];
 }
 
+/**
+ * Los perfiles tal cual están dados de alta, y cuál es la activa. Sin tocar
+ * disco más allá del registro: nada de credenciales, uso, ni la UNC de una
+ * distro.
+ *
+ * Existe para `cuentaParaSesion`: para elegir con qué cuenta reanudar una
+ * sesión ya identificada alcanza con saber cuáles hay y cuál es cada una —no
+ * hace falta el costo de `listProfiles`/`profileForWork` (login, cupo, Chrome)
+ * para una decisión que no depende de nada de eso.
+ */
+export async function allProfiles(): Promise<{ profiles: Profile[]; activeProfileId: string }> {
+  const registry = await loadRegistry();
+  return {
+    profiles: visibleProfiles(registry.profiles),
+    activeProfileId: effectiveActiveId(registry.profiles, registry.activeProfileId)
+  };
+}
+
 /** El pozo de sesiones vive en la cuenta principal: es el `~/.claude` real, el
  *  que ya tiene todo el historial y el que usa el CLI cuando se lo abre a mano. */
 /**

@@ -10,6 +10,7 @@ import { anotar, archivoDeRegistro, leer, registroDeDesktop } from './registro';
 import { cancelLogin, loginPending, startLogin, submitCode } from './login';
 import { markOnboardingDone } from './onboarding';
 import {
+  allProfiles,
   createProfile,
   createWslProfile,
   deleteProfile,
@@ -30,7 +31,7 @@ import { openTerminal } from './terminal';
 import { tokensFor } from './tokens';
 import { readTranscript } from './transcript';
 import { readUsage } from './usage';
-import { distrosCorriendo, distrosInstaladas, encenderDistro } from './wsl';
+import { cuentaParaSesion, distrosCorriendo, distrosInstaladas, encenderDistro } from './wsl';
 import type { Profile, ProfileWithStatus, Raiz, Result, SessionMeta } from '../shared/types';
 
 /** Envuelve un handler para que el renderer nunca reciba una excepción cruda. */
@@ -355,13 +356,29 @@ function registerHandlers() {
       raices: leidas.map((l) => l.raiz)
     };
   });
-  // Reanuda con la cuenta activa. No hay que mover nada: su `projects` es el
-  // mismo directorio donde ya está el transcript.
+  // Reanuda con la cuenta de la sesión: la activa si es de Windows, como
+  // siempre (su `projects` es el mismo directorio donde ya está el
+  // transcript); la de la distro si es de WSL, porque ahí la activa puede ser
+  // cualquier otra y el transcript sólo lo ve la cuenta de esa distro. Ver
+  // `cuentaParaSesion`.
   handle('sessions:resume', async (id: string) => {
     const { session } = await findSession(id);
-    const { profile: target, relevo } = await profileForWork();
+    const { profiles, activeProfileId } = await allProfiles();
+    const target = cuentaParaSesion(session, profiles, activeProfileId);
+    if (!target) {
+      throw new Error(
+        session.entorno.tipo === 'wsl'
+          ? `No hay ninguna cuenta dada de alta para la distro "${session.entorno.distro}": sin ella no se puede reanudar esta sesión sin arriesgarse a abrirla con la cuenta equivocada. Agregala con "Agregar cuenta de WSL" y volvé a intentar.`
+          : 'No hay ninguna cuenta activa con la que reanudar esta sesión.'
+      );
+    }
     await requireLogin(target);
     await openTerminalAs(session.cwd, `claude --resume ${session.id}`, target);
+    // El aviso de cambio de cuenta por falta de cupo sólo tiene sentido en
+    // Windows: ahí hay más de una cuenta candidata y cuál usar es decisión del
+    // usuario. Una sesión de WSL tiene una única cuenta posible —la de su
+    // distro—, así que no hay entre qué elegir ni cupo de otra que ofrecer.
+    const relevo = session.entorno.tipo === 'wsl' ? null : (await profileForWork()).relevo;
     return {
       compactions: await countCompactions(rutaDe(session)),
       relevo
@@ -382,6 +399,13 @@ function registerHandlers() {
       if (picked.canceled || !picked.filePaths[0]) return null;
       dir = picked.filePaths[0];
     }
+    // `dir` no se traduce a POSIX acá aunque `profile` sea de WSL: el diálogo
+    // es de Windows siempre (elija la carpeta que elija, incluso una dentro de
+    // una distro por su UNC \\wsl.localhost\...), y `openTerminal` ->
+    // `abrirEnWsl` YA hace `cwd.startsWith('/') ? cwd : windowsAPosix(distro,
+    // cwd)` antes del `--cd`. Traducir acá también dejaría dos lugares con la
+    // misma regla, que es justo lo que se evita: la traducción vive en un
+    // único lugar, el que no se puede saltear.
     await openTerminalAs(dir, 'claude', profile);
     return { relevo };
   });
