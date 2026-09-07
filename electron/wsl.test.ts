@@ -7,7 +7,9 @@ import {
   esWsl,
   parseDistros,
   estadoDeRaiz,
-  sePuedeLeer
+  posixAWindows,
+  sePuedeLeer,
+  windowsAPosix
 } from './wsl';
 
 describe('parseDistros', () => {
@@ -168,5 +170,56 @@ describe('llamadas a wsl.exe', () => {
     // Verificado: 0,12 s, y la distro sigue apagada después.
     expect(argsDeConsulta('corriendo')).toEqual(['-l', '-q', '--running']);
     expect(argsDeConsulta('instaladas')).toEqual(['-l', '-q']);
+  });
+});
+
+describe('posixAWindows', () => {
+  it('el home de la distro va por la UNC', () => {
+    expect(posixAWindows('Ubuntu', '/home/vos/proy')).toBe(
+      '\\\\wsl.localhost\\Ubuntu\\home\\vos\\proy'
+    );
+  });
+
+  it('/mnt/c va a C:\\ directo, no por la UNC: es la misma carpeta y es 16x más rápido', () => {
+    expect(posixAWindows('Ubuntu', '/mnt/c/Users/x/proy')).toBe('C:\\Users\\x\\proy');
+    expect(posixAWindows('Ubuntu', '/mnt/d/datos')).toBe('D:\\datos');
+  });
+
+  it('/mnt/c solo, sin resto, es la raíz del volumen y no el directorio actual', () => {
+    // ['C:'].join('\\') da 'C:', que es truthy: el `||` del literal nunca
+    // dispara. Y en Windows 'C:' no es la raíz de C:, es "el directorio
+    // actual de C:", que es otra carpeta.
+    expect(posixAWindows('Ubuntu', '/mnt/c')).toBe('C:\\');
+  });
+});
+
+describe('windowsAPosix', () => {
+  it('inversa de la UNC', () => {
+    expect(windowsAPosix('Ubuntu', '\\\\wsl.localhost\\Ubuntu\\home\\vos\\proy')).toBe(
+      '/home/vos/proy'
+    );
+  });
+
+  it('una carpeta de Windows elegida en el diálogo se ve desde la distro por /mnt', () => {
+    expect(windowsAPosix('Ubuntu', 'C:\\Users\\x\\proy')).toBe('/mnt/c/Users/x/proy');
+  });
+
+  it('ida y vuelta', () => {
+    const p = '/home/vos/un proyecto';
+    expect(windowsAPosix('Ubuntu', posixAWindows('Ubuntu', p))).toBe(p);
+  });
+
+  it('no confunde una UNC de otra distro cuyo nombre es prefijo del propio', () => {
+    // Interpolar el nombre de la distro en una RegExp sin escapar es un bug
+    // real, no hipotético: 'Ubuntu-22.04' ya tiene un punto, que en regex
+    // matchea cualquier carácter. Sin escapar, la UNC de 'Ubuntu-22X04'
+    // pasaría como si fuera de 'Ubuntu-22.04'.
+    expect(() =>
+      windowsAPosix('Ubuntu-22.04', '\\\\wsl.localhost\\Ubuntu-22X04\\home\\vos')
+    ).toThrow();
+  });
+
+  it('una ruta que no es ni la UNC de la distro ni un disco no se sabe traducir', () => {
+    expect(() => windowsAPosix('Ubuntu', 'algo/que/no/es/una/ruta/windows')).toThrow();
   });
 });

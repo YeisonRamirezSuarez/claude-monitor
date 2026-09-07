@@ -206,3 +206,47 @@ export async function hayCliEn(distro: string): Promise<boolean> {
 export async function encenderDistro(distro: string): Promise<void> {
   await run('wsl.exe', ['-d', distro, '--', 'true'], { timeout: TIMEOUT_WSL, windowsHide: true });
 }
+
+/**
+ * Una ruta de la distro, vista desde Windows.
+ *
+ * `/mnt/<letra>/...` se mapea al volumen de Windows directo y NO por la UNC: es
+ * literalmente la misma carpeta, y por NTFS se lee 16x más rápido (medido:
+ * 0,06 s contra 0,94 s sobre los mismos 16,8 MB).
+ *
+ * Son funciones puras en vez de `wslpath` para no gastar un proceso —y una
+ * distro encendida— cada vez que se muestra una fila de la lista.
+ */
+export function posixAWindows(distro: string, p: string): string {
+  const mnt = /^\/mnt\/([a-zA-Z])(\/.*)?$/.exec(p);
+  if (mnt) {
+    const letra = mnt[1].toUpperCase();
+    const resto = (mnt[2] ?? '').split('/').filter(Boolean);
+    // `['C:'].join('\\')` da 'C:', que es truthy: un `||` de respaldo nunca
+    // dispara. Y en Windows 'C:' no es la raíz del volumen: es "el
+    // directorio actual de C:", que es otra carpeta. Por eso la rama vacía
+    // se decide aparte, no con un fallback.
+    return resto.length > 0 ? [`${letra}:`, ...resto].join('\\') : `${letra}:\\`;
+  }
+  return ['\\\\wsl.localhost', distro, ...p.split('/').filter(Boolean)].join('\\');
+}
+
+/** La inversa. No es decorativa: `sessions:new` abre el diálogo de carpeta de
+ *  Windows, que devuelve una ruta Windows, y hay que volverla POSIX antes de
+ *  pasarla a `--cd`. */
+export function windowsAPosix(distro: string, p: string): string {
+  // Comparación de prefijo literal, sin distinguir mayúsculas (la UNC no las
+  // distingue) — no una RegExp con el nombre de la distro interpolado sin
+  // escapar: 'Ubuntu-22.04' ya tiene un punto, que en regex matchea cualquier
+  // carácter, y la UNC de otra distro pasaría como si fuera de esta.
+  const prefijoUNC = `\\\\wsl.localhost\\${distro}\\`.toLowerCase();
+  if (p.toLowerCase().startsWith(prefijoUNC)) {
+    return '/' + p.slice(prefijoUNC.length).split('\\').filter(Boolean).join('/');
+  }
+  const disco = /^([a-zA-Z]):\\?(.*)$/.exec(p);
+  if (disco) {
+    const resto = disco[2].split('\\').filter(Boolean);
+    return ['/mnt', disco[1].toLowerCase(), ...resto].join('/');
+  }
+  throw new Error(`No sé traducir esta ruta a POSIX: ${p}`);
+}
