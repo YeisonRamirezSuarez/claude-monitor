@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { configDirUNC, parseDistros, estadoDeRaiz } from './wsl';
+import { configDirUNC, esWsl, parseDistros, estadoDeRaiz } from './wsl';
 
 describe('parseDistros', () => {
   it('lee la salida de wsl -l -q', () => {
@@ -77,5 +77,19 @@ describe('estadoDeRaiz', () => {
     expect(estadoDeRaiz({ ...base, corriendo: [], hayConfig: false, hayCli: false }).tipo).toBe(
       'apagada'
     );
+  });
+});
+
+describe('esWsl', () => {
+  it('true para el entorno de una distro', () => {
+    expect(esWsl({ tipo: 'wsl', distro: 'Ubuntu', home: '/home/vos' })).toBe(true);
+  });
+
+  it('false para Windows explícito', () => {
+    expect(esWsl({ tipo: 'windows' })).toBe(false);
+  });
+
+  it('false sin entorno: su ausencia significa Windows', () => {
+    expect(esWsl(undefined)).toBe(false);
   });
 });

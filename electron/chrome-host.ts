@@ -1,8 +1,9 @@
 import { constants } from 'node:fs';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { Profile } from '../shared/types';
+import type { Entorno, Profile } from '../shared/types';
 import { pruneStalePairing } from './chrome-launch';
+import { esWsl, WINDOWS } from './wsl';
 
 /**
  * Hace que la extensión de Chrome hable con la cuenta que se está usando.
@@ -104,9 +105,16 @@ async function findClaudeExe(configDir: string, sharedRoot?: string): Promise<st
  * Deja el puente de esta cuenta apuntando a su propia carpeta.
  *
  * Devuelve `true` si tocó algo. `false` significa que no hacía falta o que no
- * se pudo: nunca escribe un `.bat` que no sepa armar.
+ * se pudo: nunca escribe un `.bat` que no sepa armar. Una cuenta WSL entra en
+ * ese mismo `false`: el puente es de Windows, así que no hay `.bat` que
+ * escribirle. Ver `esWsl` en wsl.ts.
  */
-export async function ensureHostScript(configDir: string, sharedRoot?: string): Promise<boolean> {
+export async function ensureHostScript(
+  configDir: string,
+  sharedRoot?: string,
+  entorno: Entorno = WINDOWS
+): Promise<boolean> {
+  if (esWsl(entorno)) return false;
   if (process.platform !== 'win32') return false;
 
   const script = hostScript(configDir);
@@ -143,11 +151,13 @@ export async function ensureHostScript(configDir: string, sharedRoot?: string): 
  */
 export async function ensureAll(profiles: Profile[], sharedRoot: string): Promise<void> {
   for (const profile of profiles) {
-    // Ni tocar: leer/escribir la UNC de una distro apagada la ENCIENDE (medido:
-    // 1,90 s, 345 MB de vmmemWSL). El puente de Chrome es de Windows: no hay
-    // .bat ni emparejamiento que escribirle al ~/.claude real de esa persona.
-    if (profile.entorno?.tipo === 'wsl') continue;
-    await ensureHostScript(profile.configDir, sharedRoot).catch(() => {});
+    // El filtro va ANTES de llamar a ensureHostScript, para no rozar el disco
+    // de una cuenta WSL en absoluto. Ver `esWsl` en wsl.ts. Igual se le pasa
+    // el entorno a ensureHostScript: que su guard dependa de este `continue`
+    // para no ejercitarse nunca es lo que lo deja sin efecto el día que
+    // alguien borre este filtro.
+    if (esWsl(profile.entorno)) continue;
+    await ensureHostScript(profile.configDir, sharedRoot, profile.entorno).catch(() => {});
     await pruneStalePairing(profile.configDir, profile.id).catch(() => {});
   }
 }

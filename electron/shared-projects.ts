@@ -1,6 +1,7 @@
 import { lstat, mkdir, readdir, rename, rmdir, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Entorno, Profile } from '../shared/types';
+import { esWsl, WINDOWS } from './wsl';
 
 /**
  * Hace que todas las cuentas DE WINDOWS vean las mismas conversaciones.
@@ -22,13 +23,13 @@ import type { Entorno, Profile } from '../shared/types';
 export async function shareProjects(
   configDir: string,
   sharedRoot: string,
-  entorno: Entorno = { tipo: 'windows' }
+  entorno: Entorno = WINDOWS
 ): Promise<void> {
-  // Una cuenta WSL nunca entra al pozo. Medido: no se puede crear un junction
-  // de Windows adentro de ext4 ("Función incorrecta"), y un symlink de Linux
+  // Una cuenta WSL nunca entra al pozo: no se puede crear un junction de
+  // Windows adentro de ext4 ("Función incorrecta"), y un symlink de Linux
   // hacia /mnt/c lo lee WSL pero NO lo lee Windows por la UNC (1 entrada de
-  // 31). Intentarlo sólo deja basura.
-  if (entorno.tipo === 'wsl') return;
+  // 31). Intentarlo sólo deja basura. Ver `esWsl` en wsl.ts.
+  if (esWsl(entorno)) return;
   if (configDir === sharedRoot) return; // la cuenta dueña del pozo
 
   const link = join(configDir, 'projects');
@@ -91,11 +92,12 @@ export async function unlinkShared(configDir: string): Promise<void> {
 
 export async function shareAll(profiles: Profile[], sharedRoot: string): Promise<void> {
   for (const profile of profiles) {
-    // Ni tocar: leer la UNC de una distro apagada la ENCIENDE (medido: 1,90 s
-    // y 345 MB de vmmemWSL quedan corriendo). shareProjects ya se niega si se
-    // le pasa el entorno, pero acá el filtro va ANTES de llamarla, mirando
-    // sólo el Profile, para no rozar el disco de una cuenta WSL en absoluto.
-    if (profile.entorno?.tipo === 'wsl') continue;
-    await shareProjects(profile.configDir, sharedRoot).catch(() => {});
+    // El filtro va ANTES de llamar a shareProjects, mirando sólo el Profile,
+    // para no rozar el disco de una cuenta WSL en absoluto. Ver `esWsl` en
+    // wsl.ts. Igual se le pasa el entorno a shareProjects: que su guard
+    // interno dependa de este `continue` para no ejercitarse nunca es lo que
+    // lo deja sin efecto el día que alguien borre este filtro.
+    if (esWsl(profile.entorno)) continue;
+    await shareProjects(profile.configDir, sharedRoot, profile.entorno).catch(() => {});
   }
 }

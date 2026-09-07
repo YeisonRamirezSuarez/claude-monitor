@@ -101,7 +101,7 @@ async function requireLogin(profile: Profile): Promise<void> {
  * sesión sería mucho peor.
  */
 async function openTerminalAs(cwd: string, command: string, profile: Profile) {
-  await ensureHostScript(profile.configDir, await getSharedRoot()).catch((error) => {
+  await ensureHostScript(profile.configDir, await getSharedRoot(), profile.entorno).catch((error) => {
     console.warn('No se pudo fijar la cuenta en el puente de Chrome:', error);
   });
   const usage = await readUsage(profile.configDir).catch(() => null);
@@ -215,7 +215,7 @@ function registerHandlers() {
     // y elegir ahí lanza otro login que abre el navegador por defecto. Ver
     // `onboarding.ts`.
     const profile = await getProfile(id);
-    await markOnboardingDone(profile.configDir, await getSharedRoot()).catch(() => {});
+    await markOnboardingDone(profile.configDir, await getSharedRoot(), profile.entorno).catch(() => {});
     return null;
   });
   handle('profiles:loginCancel', async (id: string) => {

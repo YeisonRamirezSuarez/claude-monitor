@@ -28,4 +28,17 @@ describe('sePuedeBorrarDelDisco', () => {
   it('NO: la raíz misma', () => {
     expect(sePuedeBorrarDelDisco(raiz, raiz)).toBe(false);
   });
+
+  it('NO: un configDir que se escapa por arriba de la raíz con ..', () => {
+    // path.relative resuelve los `..` antes de comparar: esto no puede
+    // colarse degradando el chequeo a un startsWith de strings.
+    expect(sePuedeBorrarDelDisco(`${raiz}\\..\\..\\.claude`, raiz)).toBe(false);
+  });
+
+  it('NO: un configDir de otro volumen, que path.relative no puede expresar como relativo', () => {
+    // Entre C: y D: no hay ruta relativa: path.relative devuelve el destino
+    // tal cual, absoluto. Es la misma razón por la que el caso UNC de arriba
+    // da `false`, pero acá sin WSL de por medio.
+    expect(sePuedeBorrarDelDisco('D:\\algo\\.claude', raiz)).toBe(false);
+  });
 });

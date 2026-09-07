@@ -89,6 +89,21 @@ describe('markOnboardingDone', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('con entorno WSL no escribe nada, aunque haya .claude.json', async () => {
+    const cuenta = await mkdtemp(join(tmpdir(), 'cm-onb-'));
+    try {
+      await writeFile(join(cuenta, '.claude.json'), CUENTA);
+
+      expect(
+        await markOnboardingDone(cuenta, undefined, { tipo: 'wsl', distro: 'Ubuntu', home: '/home/vos' })
+      ).toBe(false);
+
+      expect(await readFile(join(cuenta, '.claude.json'), 'utf8')).toBe(CUENTA);
+    } finally {
+      await rm(cuenta, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('markAllOnboardingDone', () => {

@@ -118,6 +118,24 @@ describe('ensureHostScript', () => {
       await rm(cuenta, { recursive: true, force: true });
     }
   });
+
+  it('con entorno WSL no escribe nada, ni siquiera el respaldo', async () => {
+    const cuenta = await tmp('cm-cuenta-');
+    try {
+      const script = join(cuenta, 'chrome', 'chrome-native-host.bat');
+      await mkdir(join(cuenta, 'chrome'), { recursive: true });
+      await writeFile(script, ORIGINAL);
+
+      expect(await ensureHostScript(cuenta, undefined, { tipo: 'wsl', distro: 'Ubuntu', home: '/home/vos' })).toBe(
+        false
+      );
+
+      expect(await readFile(script, 'utf8')).toBe(ORIGINAL);
+      await expect(readFile(`${script}.bak-claude-monitor`, 'utf8')).rejects.toThrow();
+    } finally {
+      await rm(cuenta, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('ensureAll', () => {

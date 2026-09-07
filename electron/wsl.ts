@@ -13,6 +13,26 @@ import type { Entorno, EstadoRaiz } from '../shared/types';
 export const WINDOWS: Entorno = { tipo: 'windows' };
 
 /**
+ * Si esta cuenta vive en una distro.
+ *
+ * Centraliza el chequeo: cada punto de escritura por cuenta —el pozo de
+ * `projects/`, los plugins, la marca de onboarding, el puente de Chrome— tiene
+ * que saltear las cuentas WSL antes de tocar el disco. Medido en esta
+ * máquina: tocar la UNC de una distro apagada la ENCIENDE (1,90 s, 345 MB de
+ * `vmmemWSL` quedan corriendo), y lo que se escribiría ahí tiene forma de
+ * Windows —un junction, un `.bat`, una marca de onboarding— así que además de
+ * gastar memoria de más, ensuciaría el `~/.claude` real de esa persona en
+ * Linux.
+ *
+ * Toma `Entorno` en vez de `Profile` completo para servir tanto a los bucles
+ * (`esWsl(profile.entorno)`) como a las funciones de una sola cuenta que ya
+ * reciben el entorno como parámetro (`esWsl(entorno)`).
+ */
+export function esWsl(entorno?: Entorno): boolean {
+  return entorno?.tipo === 'wsl';
+}
+
+/**
  * Los nombres de distro que salen de `wsl -l -q` (o `wsl -l -q --running`).
  *
  * `wsl.exe` emite UTF-16LE, no UTF-8. Medido en esta máquina:

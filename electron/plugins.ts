@@ -1,6 +1,7 @@
 import { lstat, mkdir, readFile, readdir, rename, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Profile } from '../shared/types';
+import { esWsl } from './wsl';
 
 /**
  * Hace que toda sesión arranque con los mismos plugins y skills, sin importar
@@ -99,10 +100,8 @@ export async function syncPlugins(configDir: string, sharedRoot: string): Promis
 
 export async function syncAll(profiles: Profile[], sharedRoot: string): Promise<void> {
   for (const profile of profiles) {
-    // Ni tocar: leer/escribir la UNC de una distro apagada la ENCIENDE (medido:
-    // 1,90 s, 345 MB de vmmemWSL), y un junction o un settings.json con forma
-    // de Windows ensuciaría el ~/.claude real de esa persona en Ubuntu.
-    if (profile.entorno?.tipo === 'wsl') continue;
+    // No hay una cuenta WSL en la que escribir: ver `esWsl` en wsl.ts.
+    if (esWsl(profile.entorno)) continue;
     await syncPlugins(profile.configDir, sharedRoot).catch(() => {});
   }
 }

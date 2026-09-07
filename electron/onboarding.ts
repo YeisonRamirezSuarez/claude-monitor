@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Profile } from '../shared/types';
+import type { Entorno, Profile } from '../shared/types';
+import { esWsl, WINDOWS } from './wsl';
 
 /**
  * Marca la cuenta como ya presentada, para que el CLI no corra el arranque de
@@ -62,8 +63,16 @@ export function readOnboardingVersion(poolRaw: string): string {
  * `sharedRoot` sólo aporta la versión de presentación. Su `.claude.json` puede
  * estar al lado de la carpeta o adentro, según cómo se haya instalado el CLI;
  * se prueban las dos, igual que en `chrome-host.ts`.
+ *
+ * Una cuenta WSL no llega a tocar nada: la marca de onboarding es de Windows.
+ * Ver `esWsl` en wsl.ts.
  */
-export async function markOnboardingDone(configDir: string, sharedRoot?: string): Promise<boolean> {
+export async function markOnboardingDone(
+  configDir: string,
+  sharedRoot?: string,
+  entorno: Entorno = WINDOWS
+): Promise<boolean> {
+  if (esWsl(entorno)) return false;
   const path = join(configDir, '.claude.json');
   const raw = await readFile(path, 'utf8').catch(() => null);
   if (raw === null) return false; // todavía no existe: se marca después del primer arranque
@@ -83,13 +92,16 @@ export async function markOnboardingDone(configDir: string, sharedRoot?: string)
   return true;
 }
 
-/** Deja todas las cuentas presentadas de una. Las de WSL quedan afuera: leer
- *  la UNC de una distro apagada la ENCIENDE (medido: 1,90 s, 345 MB de
- *  vmmemWSL), y la marca de onboarding es de Windows — escribirla ahí
- *  ensuciaría el ~/.claude real de esa persona en Ubuntu. */
+/** Deja todas las cuentas presentadas de una.
+ *
+ * El filtro va ANTES de llamar a markOnboardingDone, para no rozar el disco
+ * de una cuenta WSL en absoluto. Ver `esWsl` en wsl.ts. Igual se le pasa el
+ * entorno a markOnboardingDone: que su guard dependa de este `continue` para
+ * no ejercitarse nunca es lo que lo deja sin efecto el día que alguien borre
+ * este filtro. */
 export async function markAllOnboardingDone(profiles: Profile[], sharedRoot?: string): Promise<void> {
   for (const profile of profiles) {
-    if (profile.entorno?.tipo === 'wsl') continue;
-    await markOnboardingDone(profile.configDir, sharedRoot).catch(() => {});
+    if (esWsl(profile.entorno)) continue;
+    await markOnboardingDone(profile.configDir, sharedRoot, profile.entorno).catch(() => {});
   }
 }
