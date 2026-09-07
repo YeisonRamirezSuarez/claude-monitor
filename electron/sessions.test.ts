@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile, appendFile, rm, stat } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseSessionLines, listSessions, deleteSession } from './sessions';
+import { WINDOWS } from './wsl';
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -127,12 +128,12 @@ describe('listSessions cache', () => {
       });
       await writeFile(sessionFile, line + '\n');
 
-      const first = await listSessions(tmp);
+      const first = await listSessions(tmp, WINDOWS);
       const before = first.find((s) => s.id === 'session-1')!.sizeBytes;
 
       await appendFile(sessionFile, line + '\n');
 
-      const second = await listSessions(tmp);
+      const second = await listSessions(tmp, WINDOWS);
       const after = second.find((s) => s.id === 'session-1')!.sizeBytes;
 
       expect(after).toBeGreaterThan(before);
@@ -213,7 +214,7 @@ describe('identidad de la sesión: el archivo, no el sessionId de adentro', () =
   it('da a cada archivo su propio id aunque compartan el sessionId interno', async () => {
     const { tmp } = await makeForkFixture();
     try {
-      const ids = (await listSessions(tmp)).map((s) => s.id).sort();
+      const ids = (await listSessions(tmp, WINDOWS)).map((s) => s.id).sort();
       expect(ids).toEqual([
         'aaaaaaaa-0000-4000-8000-000000000001',
         'bbbbbbbb-0000-4000-8000-000000000002'
@@ -226,13 +227,42 @@ describe('identidad de la sesión: el archivo, no el sessionId de adentro', () =
   it('borrar el fork deja intacto el archivo del padre', async () => {
     const { tmp, padre, fork } = await makeForkFixture();
     try {
-      const sessions = await listSessions(tmp);
+      const sessions = await listSessions(tmp, WINDOWS);
       const meta = sessions.find((s) => s.preview === 'sesion forkeada')!;
       await deleteSession(tmp, meta.projectSlug, meta.id);
       expect(await exists(fork)).toBe(false);
       expect(await exists(padre)).toBe(true);
     } finally {
       await rm(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('listSessions: etiqueta de origen', () => {
+  async function raizDePrueba(): Promise<string> {
+    const tmp = await mkdtemp(join(tmpdir(), 'claude-monitor-entorno-test-'));
+    const projectDir = join(tmp, 'projects', 'proyecto');
+    await mkdir(projectDir, { recursive: true });
+    const line = JSON.stringify({ type: 'user', cwd: 'C:\\x', message: { content: 'hola' } });
+    await writeFile(join(projectDir, 'session-1.jsonl'), line + '\n');
+    return tmp;
+  }
+
+  it('la etiqueta queda DENTRO del objeto cacheado, no puesta después', async () => {
+    // La caché de listSessions guarda el SessionMeta ya armado. Si la etiqueta
+    // se agregara al salir, la segunda llamada —que devuelve el objeto
+    // cacheado— vendría sin ella. Este test corre listSessions DOS veces a
+    // propósito: la primera puebla la caché, la segunda la usa.
+    const raiz = await raizDePrueba();
+    try {
+      const primera = await listSessions(raiz, WINDOWS);
+      const segunda = await listSessions(raiz, WINDOWS);
+      expect(primera[0].entorno).toEqual({ tipo: 'windows' });
+      expect(primera[0].raiz).toBe(raiz);
+      expect(segunda[0].entorno).toEqual({ tipo: 'windows' });
+      expect(segunda[0].raiz).toBe(raiz);
+    } finally {
+      await rm(raiz, { recursive: true, force: true });
     }
   });
 });

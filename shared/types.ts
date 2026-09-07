@@ -9,11 +9,21 @@ export type EstadoRaiz =
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
 
+/** Dónde vive una instalación de Claude Code.
+ *
+ *  Es opcional en `Profile` a propósito: su ausencia significa Windows, que es
+ *  el caso de siempre, así que un `profiles.json` escrito antes de esto sigue
+ *  siendo válido y no hace falta migrarlo. */
+export type Entorno =
+  | { tipo: 'windows' }
+  | { tipo: 'wsl'; distro: string; home: string };
+
 export type Profile = {
   id: string;
   name: string;
   configDir: string;
   isDefault: boolean;
+  entorno?: Entorno;
 };
 
 /** Un límite de consumo tal como lo reporta Claude Code. `kind` viene de la
@@ -69,6 +79,12 @@ export type SessionMeta = ParsedSession & {
   projectSlug: string;
   mtime: number;
   sizeBytes: number;
+  /** La raíz que contiene este archivo. Va la RAÍZ y no un `profileId` porque
+   *  por el pozo muchas cuentas Windows comparten una sola raíz: atar la
+   *  sesión a una cuenta sería falso. */
+  raiz: string;
+  /** Dónde se reanuda. La UI la usa para la marca; el lanzador, para el shell. */
+  entorno: Entorno;
 };
 
 export type ChromeStatus = {

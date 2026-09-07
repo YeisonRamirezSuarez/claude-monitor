@@ -28,6 +28,7 @@ import { openTerminal } from './terminal';
 import { tokensFor } from './tokens';
 import { readTranscript } from './transcript';
 import { readUsage } from './usage';
+import { WINDOWS } from './wsl';
 import type { Profile, ProfileWithStatus, Result } from '../shared/types';
 
 /** Envuelve un handler para que el renderer nunca reciba una excepción cruda. */
@@ -50,7 +51,7 @@ const SESSION_ID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}
 async function findSession(id: string) {
   if (typeof id !== 'string' || !SESSION_ID.test(id)) throw new Error(`Id de sesión inválido: ${id}`);
   const sharedRoot = await getSharedRoot();
-  const session = (await listSessions(sharedRoot)).find((s) => s.id === id);
+  const session = (await listSessions(sharedRoot, WINDOWS)).find((s) => s.id === id);
   if (!session) throw new Error(`Sesión no encontrada: ${id}`);
   return { sharedRoot, session };
 }
@@ -309,7 +310,7 @@ function registerHandlers() {
     desktop: profileId ? await registroDeDesktop(desktopDir(profileId)) : []
   }));
 
-  handle('sessions:list', async () => listSessions(await getSharedRoot()));
+  handle('sessions:list', async () => listSessions(await getSharedRoot(), WINDOWS));
   // Reanuda con la cuenta activa. No hay que mover nada: su `projects` es el
   // mismo directorio donde ya está el transcript.
   handle('sessions:resume', async (id: string) => {
@@ -353,7 +354,7 @@ function registerHandlers() {
   // sólo se relee el archivo de la sesión que está corriendo. Ver `tokens.ts`.
   handle('sessions:tokens', async () => {
     const sharedRoot = await getSharedRoot();
-    const sessions = await listSessions(sharedRoot);
+    const sessions = await listSessions(sharedRoot, WINDOWS);
     return tokensFor(
       sessions.map((s) => ({ id: s.id, path: join(sharedRoot, 'projects', s.projectSlug, `${s.id}.jsonl`) }))
     );

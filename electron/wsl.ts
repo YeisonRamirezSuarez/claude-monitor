@@ -7,7 +7,10 @@
  * se puede probar sin una distro instalada.
  */
 
-import type { EstadoRaiz } from '../shared/types';
+import type { Entorno, EstadoRaiz } from '../shared/types';
+
+/** El entorno de siempre. Existe para no repetir el literal en cada llamador. */
+export const WINDOWS: Entorno = { tipo: 'windows' };
 
 /**
  * Los nombres de distro que salen de `wsl -l -q` (o `wsl -l -q --running`).

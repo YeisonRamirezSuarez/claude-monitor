@@ -2,7 +2,7 @@ import { createReadStream } from 'node:fs';
 import { readdir, rm, stat } from 'node:fs/promises';
 import { basename, join, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
-import type { ParsedSession, SessionMeta } from '../shared/types';
+import type { Entorno, ParsedSession, SessionMeta } from '../shared/types';
 
 const PREVIEW_MAX = 140;
 
@@ -102,7 +102,7 @@ async function readSessionFile(filePath: string): Promise<ParsedSession | null> 
 type FileCacheEntry = { mtimeMs: number; size: number; meta: SessionMeta };
 const cache = new Map<string, FileCacheEntry>();
 
-export async function listSessions(configDir: string): Promise<SessionMeta[]> {
+export async function listSessions(configDir: string, entorno: Entorno): Promise<SessionMeta[]> {
   const projectsDir = join(configDir, 'projects');
 
   let entries: import('node:fs').Dirent[];
@@ -146,7 +146,11 @@ export async function listSessions(configDir: string): Promise<SessionMeta[]> {
             id: file.replace(/\.jsonl$/, ''),
             projectSlug: name,
             mtime: stats.mtimeMs,
-            sizeBytes: stats.size
+            sizeBytes: stats.size,
+            // Adentro del objeto cacheado, no puesto al salir: la caché guarda
+            // este mismo objeto y la segunda llamada lo devuelve tal cual.
+            raiz: configDir,
+            entorno
           };
         }
 
