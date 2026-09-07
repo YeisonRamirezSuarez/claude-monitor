@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { AccountUsage, ProfileList, ProfileWithStatus, SessionMeta } from '../shared/types';
+import type { AccountUsage, ProfileList, ProfileWithStatus, Raiz, SessionMeta } from '../shared/types';
 import AccountIcon from './AccountIcon';
 import { projectName, relativeDate } from './format';
 
@@ -67,10 +67,20 @@ function Usage({ usage }: { usage: AccountUsage | null }) {
 type Props = {
   profileList: ProfileList | null;
   sessions: SessionMeta[];
+  /** El estado de cada raíz de lectura, una por cuenta WSL más el pozo
+   *  compartido de Windows. Ninguno es silencioso: sirve para decir "distro
+   *  apagada" en vez de una lista corta y muda. */
+  raices: Raiz[];
   selectedSlug: string | null;
   onSelectSlug: (slug: string | null) => void;
   onSelectProfile: (id: string) => void;
   onAddAccount: (name: string) => void;
+  /** Da de alta una cuenta que vive en una distro de WSL, ya elegida entre las
+   *  que devolvió `listarDistrosWsl`. */
+  onAddWslAccount: (name: string, distro: string) => void;
+  /** Enciende la distro de una cuenta. Sólo se llama desde el botón
+   *  "Encender": es el único lugar de toda la app que lo hace. */
+  onEncenderDistro: (distro: string) => void;
   onLogin: (id: string) => void;
   onOpenChrome: (id: string) => void;
   onOpenDesktop: (id: string) => void;
@@ -139,20 +149,30 @@ function chromeLabel(profile: ProfileWithStatus, listo: boolean, falta: string[]
 function ProfileBlock({
   profile,
   isActive,
+  raiz,
   onLogin,
   onOpenChrome,
   onOpenDesktop,
+  onEncenderDistro,
   onRemove,
   onSelect
 }: {
   profile: ProfileWithStatus;
   isActive: boolean;
+  /** La raíz de esta cuenta, si vive en WSL. `undefined` para una cuenta de
+   *  Windows: comparten el pozo y no tienen un estado propio que mostrar. */
+  raiz: Raiz | undefined;
   onLogin: (id: string) => void;
   onOpenChrome: (id: string) => void;
   onOpenDesktop: (id: string) => void;
+  onEncenderDistro: (distro: string) => void;
   onRemove: (id: string) => void;
   onSelect: (id: string) => void;
 }) {
+  // La distro de esta cuenta, si vive en WSL. `null` en Windows: ahí no hay
+  // nada que encender.
+  const distro = profile.entorno?.tipo === 'wsl' ? profile.entorno.distro : null;
+
   // Qué le falta al Chrome de esta cuenta. Sin esto sólo se descubre fallando:
   // se abre el navegador, la extensión dice "not connected", y no hay forma de
   // saber si lo que falta es la extensión o el login.
@@ -261,17 +281,40 @@ function ProfileBlock({
             : 'Tocá “Configurar Claude” para autorizar el CLI y poder usar esta cuenta.'}
         </p>
       )}
+      {/* El estado de la raíz de esta cuenta, cuando vive en WSL y no está
+          `ok`: "distro apagada", "sin distro", etc. Ninguno es silencioso —
+          por eso viaja con `mensaje` desde `electron/wsl.ts` en vez de dejar
+          que la lista corta y muda hable sola. */}
+      {distro && raiz && raiz.estado.tipo !== 'ok' && (
+        <div className="estado-raiz">
+          <span>{raiz.estado.mensaje}</span>
+          {raiz.estado.tipo === 'apagada' && <button onClick={() => onEncenderDistro(distro)}>Encender</button>}
+        </div>
+      )}
       <Usage usage={profile.usage} />
     </li>
   );
 }
 
 export default function Sidebar(props: Props) {
-  const { profileList, sessions, selectedSlug } = props;
+  const { profileList, sessions, raices, selectedSlug } = props;
   const [newName, setNewName] = useState('');
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   /** El proyecto cuyo "+" está desplegado, o null. Uno por vez. */
   const [nuevoEn, setNuevoEn] = useState<string | null>(null);
+  // Distros de WSL ofrecidas por "Agregar cuenta de WSL", o null si el panel
+  // no está desplegado. Se piden recién al tocar el botón: no hay
+  // autodetección silenciosa (§5.1 del spec).
+  const [wslDistros, setWslDistros] = useState<string[] | null>(null);
+  const [wslLoading, setWslLoading] = useState(false);
+  const [wslError, setWslError] = useState('');
+  const [wslName, setWslName] = useState('');
+  const [wslDistro, setWslDistro] = useState('');
+
+  // La raíz de lectura de una cuenta, por su `configDir`. `undefined` para una
+  // cuenta de Windows: comparten el pozo y no tienen una raíz propia que
+  // mostrar acá.
+  const raizDe = (p: ProfileWithStatus) => raices.find((r) => r.configDir === p.configDir);
 
   // La cuenta activa se saca de la lista de elegibles y se muestra arriba,
   // sola: es la que va a consumir los tokens, y volver a "elegirla" no hace
@@ -300,9 +343,11 @@ export default function Sidebar(props: Props) {
           <ProfileBlock
             profile={active}
             isActive
+            raiz={raizDe(active)}
             onLogin={props.onLogin}
             onOpenChrome={props.onOpenChrome}
             onOpenDesktop={props.onOpenDesktop}
+            onEncenderDistro={props.onEncenderDistro}
             onRemove={setConfirmDelete}
             onSelect={props.onSelectProfile}
           />
@@ -320,9 +365,11 @@ export default function Sidebar(props: Props) {
                 key={p.id}
                 profile={p}
                 isActive={false}
+                raiz={raizDe(p)}
                 onLogin={props.onLogin}
                 onOpenChrome={props.onOpenChrome}
                 onOpenDesktop={props.onOpenDesktop}
+                onEncenderDistro={props.onEncenderDistro}
                 onRemove={setConfirmDelete}
                 onSelect={props.onSelectProfile}
               />
@@ -343,6 +390,54 @@ export default function Sidebar(props: Props) {
         <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Nombre de la cuenta" />
         <button type="submit">Agregar</button>
       </form>
+
+      {/* Alta explícita y no autodetección: recién acá se corre la detección
+          de distros, y sólo para mostrarla — dar de alta sigue siendo un paso
+          aparte que el usuario confirma. Ver §5.1 del spec de WSL. */}
+      {wslDistros === null ? (
+        <button
+          type="button"
+          className="link"
+          disabled={wslLoading}
+          onClick={async () => {
+            setWslError('');
+            setWslLoading(true);
+            const result = await window.claudeMonitor.listarDistrosWsl();
+            setWslLoading(false);
+            if (!result.ok) return setWslError(result.error);
+            if (result.data.length === 0) return setWslError('No se encontró ninguna distro de WSL instalada.');
+            setWslDistro(result.data[0]);
+            setWslDistros(result.data);
+          }}
+        >
+          {wslLoading ? 'Buscando distros…' : 'Agregar cuenta de WSL'}
+        </button>
+      ) : (
+        <form
+          className="add-account"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!wslName.trim() || !wslDistro) return;
+            props.onAddWslAccount(wslName, wslDistro);
+            setWslName('');
+            setWslDistros(null);
+          }}
+        >
+          <input value={wslName} onChange={(e) => setWslName(e.target.value)} placeholder="Nombre de la cuenta" />
+          <select value={wslDistro} onChange={(e) => setWslDistro(e.target.value)}>
+            {wslDistros.map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
+          </select>
+          <button type="submit">Agregar</button>
+          <button type="button" className="link" onClick={() => setWslDistros(null)}>
+            Cancelar
+          </button>
+        </form>
+      )}
+      {wslError && <p className="muted">{wslError}</p>}
 
       {confirmDelete && (
         <div className="confirm">

@@ -3,7 +3,7 @@ import Sidebar from './Sidebar';
 import TranscriptView from './Transcript';
 import SessionList from './SessionList';
 import LogsPanel from './LogsPanel';
-import type { ProfileList, Result, SessionMeta, SessionTokens } from '../shared/types';
+import type { ProfileList, Raiz, Result, SessionMeta, SessionTokens } from '../shared/types';
 
 /** Desempaqueta un Result: devuelve los datos, o setea el error y devuelve null. */
 function unwrap<T>(result: Result<T>, setError: (e: string) => void): T | null {
@@ -15,6 +15,10 @@ function unwrap<T>(result: Result<T>, setError: (e: string) => void): T | null {
 export default function App() {
   const [profileList, setProfileList] = useState<ProfileList | null>(null);
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
+  // El estado de cada raíz de lectura (una por cuenta WSL, más el pozo
+  // compartido de Windows). Sin esto la lista de una distro apagada se ve
+  // corta y muda, en vez de decir por qué.
+  const [raices, setRaices] = useState<Raiz[]>([]);
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   // El consumo por sesión. Se pide aparte y sin bloquear: obliga a leer los
   // transcripts enteros —medio giga en esta máquina— y la lista tiene que
@@ -53,6 +57,7 @@ export default function App() {
       const listado = unwrap(await window.claudeMonitor.listSessions(), setError);
       if (mine !== runId.current) return;
       setSessions(listado?.sesiones ?? []);
+      setRaices(listado?.raices ?? []);
     } catch (e) {
       if (mine !== runId.current) return;
       setError(e instanceof Error ? e.message : String(e));
@@ -127,6 +132,30 @@ export default function App() {
           : 'Chrome se abrió con el perfil de esta cuenta, en claude.ai. Fijate qué cuenta aparece logueada: ' +
               'la extensión sólo conecta si es la misma con la que abrís la sesión.'
     );
+  };
+
+  // Enciende la distro de una cuenta WSL. Es el ÚNICO lugar de toda la app que
+  // lo hace, y sólo llega hasta acá porque el usuario tocó "Encender" en el
+  // estado de su raíz — nunca de rebote, ni por un refresco en segundo plano.
+  const encenderDistro = async (distro: string) => {
+    setError('');
+    setNotice('');
+    const result = await window.claudeMonitor.encenderDistro(distro);
+    if (!result.ok) return setError(result.error);
+    await refresh();
+  };
+
+  // Da de alta una cuenta que vive en una distro de WSL. El `configDir` sale
+  // ADOPTADO de esa distro, así que no hay carpeta que crear acá — a
+  // diferencia de `onAddAccount`, no hay Chrome propio que abrir: el login de
+  // esta cuenta pasa por la terminal de la distro, no por el navegador.
+  const addWslAccount = async (name: string, distro: string) => {
+    setError('');
+    setNotice('');
+    const created = await window.claudeMonitor.createWslProfile(name, distro);
+    if (!created.ok) return setError(created.error);
+    await refresh();
+    setNotice(`Cuenta "${name}" creada, con la distro ${distro}.`);
   };
 
   // Toma o devuelve el protocolo `claude://`.
@@ -297,6 +326,7 @@ export default function App() {
       <Sidebar
         profileList={profileList}
         sessions={sessions}
+        raices={raices}
         selectedSlug={selectedSlug}
         onSelectSlug={setSelectedSlug}
         onSelectProfile={(id) => {
@@ -333,6 +363,8 @@ export default function App() {
               'cuando los dos primeros pasos estén hechos se cierra sola.'
           );
         }}
+        onAddWslAccount={(name, distro) => addWslAccount(name, distro)}
+        onEncenderDistro={(distro) => encenderDistro(distro)}
         onLogin={(id) => startLogin(id)}
         onOpenChrome={(id) => openChrome(id)}
         onOpenDesktop={(id) => openDesktop(id)}
@@ -421,6 +453,7 @@ export default function App() {
             emptyHint={emptyHint}
             activeProfileName={activeProfile?.name ?? ''}
             canResume={Boolean(activeProfile?.authenticated)}
+            activeProfileEntorno={activeProfile?.entorno ?? { tipo: 'windows' }}
             onResume={resume}
             onResumeInDesktop={resumeInDesktop}
             onDelete={(id) => run(() => window.claudeMonitor.deleteSession(id))}

@@ -1,3 +1,14 @@
+import type { Entorno } from '../shared/types';
+
+/** La marca de origen de una sesión. Vacía en Windows a propósito: son la
+ *  mayoría, y marcarlas todas convierte la marca en ruido. */
+export const etiquetaDeEntorno = (e: Entorno): string => (e.tipo === 'wsl' ? e.distro : '');
+
+/** Por qué no se puede reanudar/crear desde el panel. Un botón deshabilitado
+ *  sin motivo se lee como un bug; con motivo, como una frontera. */
+export const motivoDeshabilitado = (e: Entorno): string =>
+  e.tipo === 'wsl' ? `Se reanuda desde ${e.distro}` : '';
+
 const RELATIVE = new Intl.RelativeTimeFormat('es', { numeric: 'auto' });
 const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
   ['year', 31536000000],

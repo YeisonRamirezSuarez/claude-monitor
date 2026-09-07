@@ -329,7 +329,8 @@ button.primary:hover {
   margin-top: 10px;
 }
 
-input {
+input,
+select {
   background: #070c16;
   border: 1px solid var(--line);
   color: inherit;
@@ -343,7 +344,8 @@ input::placeholder {
   color: #5a6b8c;
 }
 
-input:focus {
+input:focus,
+select:focus {
   outline: none;
   border-color: var(--neon);
   box-shadow: var(--glow);
@@ -352,6 +354,12 @@ input:focus {
 .add-account input {
   flex: 1;
   min-width: 0;
+}
+
+/* La distro elegida al dar de alta una cuenta WSL: no crece como el nombre,
+   sólo lo justo para el texto que trae. */
+.add-account select {
+  flex: none;
 }
 
 .add-account button[type="submit"] {
@@ -499,6 +507,16 @@ input:focus {
 
 .card .branch {
   color: var(--ok);
+}
+
+/* Marca de origen de una sesión (WSL). Reusa los tokens de la lista: sin
+   colores nuevos para un dato que sólo importa a veces. */
+.chip-entorno {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid currentColor;
+  opacity: 0.7;
 }
 
 .card .actions {
@@ -698,6 +716,24 @@ button.link.incierto {
   margin: 2px 8px 0;
   font-size: 11px;
   color: var(--warn);
+}
+
+/* El estado de la raíz de una cuenta WSL: "distro apagada", "sin distro", etc.
+   Mismo tono que .chrome-falta —es la misma clase de aviso, un paso pendiente
+   antes de poder usar la cuenta— con el botón "Encender" al lado cuando aplica. */
+.estado-raiz {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 8px 4px;
+  font-size: 11px;
+  color: var(--warn);
+}
+
+.estado-raiz button {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 11px;
 }
 
 /* Consumo que no salió de la API sino de la caché que dejó el CLI: se muestra,

@@ -317,6 +317,12 @@ export async function openDesktopForProfile(
   configDir: string,
   link?: string
 ): Promise<{ firstRun: boolean; yaAbierta?: boolean; ajenas?: number }> {
+  // Desktop es una app de Windows y su pestaña Code corre el binario Windows:
+  // no puede hospedar una sesión de la distro. Ver el spec de WSL, §7.
+  if (profile.entorno?.tipo === 'wsl') {
+    throw new Error(`Claude Desktop no puede abrir la cuenta de ${profile.entorno.distro}.`);
+  }
+
   const exe = await findClaudeDesktop();
   if (!exe) {
     throw new Error(

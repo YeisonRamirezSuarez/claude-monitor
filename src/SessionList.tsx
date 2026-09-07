@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { SessionMeta, SessionTokens } from '../shared/types';
-import { formatExact, formatSize, formatTokens, projectName, relativeDate } from './format';
+import type { Entorno, SessionMeta, SessionTokens } from '../shared/types';
+import { etiquetaDeEntorno, formatExact, formatSize, formatTokens, motivoDeshabilitado, projectName, relativeDate } from './format';
 
 const SIN_CONSUMO: SessionTokens = {
   input: 0,
@@ -124,6 +124,10 @@ type Props = {
    *  dueña de la sesión. */
   activeProfileName: string;
   canResume: boolean;
+  /** El entorno de la cuenta activa. Crear ahí necesita el lanzador de WSL,
+   *  que todavía no existe (rebanada 2) — mientras tanto "Nueva…" se
+   *  deshabilita con motivo en vez de fallar al primer clic. */
+  activeProfileEntorno: Entorno;
   onResume: (id: string) => void;
   /** Reanuda la misma conversación en Claude Desktop: adopta el transcript
    *  del CLI por su id, no abre una sesión nueva. */
@@ -141,6 +145,7 @@ export default function SessionList({
   emptyHint,
   activeProfileName,
   canResume,
+  activeProfileEntorno,
   onResume,
   onResumeInDesktop,
   onDelete,
@@ -176,10 +181,24 @@ export default function SessionList({
         {/* Los dos lugares donde se puede trabajar, uno al lado del otro: la
             terminal y Desktop. Antes había un solo botón y la elección no
             existía. */}
-        <button className="primary" onClick={onNewSession}>
+        {/* Crear con la cuenta activa necesita el lanzador de WSL (rebanada 2,
+            todavía no construido): con una cuenta de ese tipo activa, los dos
+            botones se deshabilitan con el motivo en vez de fallar al tocarlos. */}
+        <button
+          className="primary"
+          disabled={activeProfileEntorno.tipo === 'wsl'}
+          title={activeProfileEntorno.tipo === 'wsl' ? motivoDeshabilitado(activeProfileEntorno) : undefined}
+          onClick={onNewSession}
+        >
           Nueva en terminal…
         </button>
-        <button onClick={onNewSessionInDesktop}>Nueva en Desktop…</button>
+        <button
+          disabled={activeProfileEntorno.tipo === 'wsl'}
+          title={activeProfileEntorno.tipo === 'wsl' ? motivoDeshabilitado(activeProfileEntorno) : undefined}
+          onClick={onNewSessionInDesktop}
+        >
+          Nueva en Desktop…
+        </button>
       </div>
 
       <Metrics sessions={filtered} tokens={tokens} cargando={tokensLoading} />
@@ -195,6 +214,13 @@ export default function SessionList({
           <p className="preview">{s.preview || <em className="muted">(sin mensajes)</em>}</p>
           <p className="meta">
             <span title={s.cwd}>{s.cwd}</span>
+            {/* De qué entorno salió la sesión. Vacía en Windows a propósito:
+                son la mayoría, y marcarlas todas sería ruido. */}
+            {etiquetaDeEntorno(s.entorno) && (
+              <span className="chip-entorno" title={`Sesión de ${etiquetaDeEntorno(s.entorno)}`}>
+                {etiquetaDeEntorno(s.entorno)}
+              </span>
+            )}
             {s.gitBranch && <span className="branch">{s.gitBranch}</span>}
             <span>{relativeDate(s.mtime)}</span>
             <span>{formatSize(s.sizeBytes)}</span>
@@ -212,11 +238,13 @@ export default function SessionList({
           </p>
           <div className="actions">
             <button
-              disabled={!canResume}
+              disabled={!canResume || s.entorno.tipo === 'wsl'}
               title={
-                canResume
-                  ? `Reanudar con la cuenta "${activeProfileName}"`
-                  : `La cuenta "${activeProfileName}" no tiene la sesión iniciada`
+                s.entorno.tipo === 'wsl'
+                  ? motivoDeshabilitado(s.entorno)
+                  : canResume
+                    ? `Reanudar con la cuenta "${activeProfileName}"`
+                    : `La cuenta "${activeProfileName}" no tiene la sesión iniciada`
               }
               onClick={() => onResume(s.id)}
             >
@@ -226,16 +254,24 @@ export default function SessionList({
                 otro —vive en su propia carpeta de datos—. Una cuenta sin el CLI
                 autorizado puede trabajar en Desktop igual. */}
             <button
+              disabled={s.entorno.tipo === 'wsl'}
               title={
-                `Seguir esta misma conversación en el Claude Desktop de "${activeProfileName}". ` +
-                'Desktop adopta el transcript y abre el historial entero.'
+                s.entorno.tipo === 'wsl'
+                  ? motivoDeshabilitado(s.entorno)
+                  : `Seguir esta misma conversación en el Claude Desktop de "${activeProfileName}". ` +
+                    'Desktop adopta el transcript y abre el historial entero.'
               }
               onClick={() => onResumeInDesktop(s.id)}
             >
               Reanudar en Desktop
             </button>
             <button onClick={() => onOpen(s.id)}>Ver conversación</button>
-            <button className="danger" onClick={() => setConfirmId(s.id)}>
+            <button
+              className="danger"
+              disabled={s.entorno.tipo === 'wsl'}
+              title={s.entorno.tipo === 'wsl' ? motivoDeshabilitado(s.entorno) : undefined}
+              onClick={() => setConfirmId(s.id)}
+            >
               Borrar
             </button>
           </div>
