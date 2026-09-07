@@ -264,6 +264,42 @@ export async function createProfile(name: string): Promise<Profile> {
  * ciegas dejaría la VM prendida para siempre — el monitor sería la causa del
  * problema de memoria que ayuda a observar.
  */
+/**
+ * Lo que respondió `hayCliEn` para cada distro, mientras esa distro siga arriba.
+ *
+ * Por qué se cachea: `hayCliEn` es un login shell adentro de la distro
+ * (`bash -lc 'command -v claude'`) y con nvm en el `.bashrc` tarda de 0,5 a
+ * 1,5 s. `raices()` corre en cada refresco del panel —o sea, en cada foco de
+ * ventana—, así que sin caché el alt-tab paga ese segundo por cuenta WSL.
+ *
+ * Por qué es SEGURO cachearlo, que es lo que no se ve solo: la respuesta sólo
+ * cambia si alguien instala o desinstala `claude` adentro de la distro, y la
+ * entrada se descarta en cuanto esa distro deja de aparecer en
+ * `wsl -l -q --running`. Instalar el CLI implica una sesión adentro de la
+ * distro, pero puede hacerse sin apagarla; el peor caso es entonces que el
+ * panel siga diciendo `sin-cli` hasta que la distro se apague (WSL lo hace solo
+ * por inactividad) o hasta el próximo arranque del panel. Es un estado que se
+ * recupera solo, no un dato que se pierda — y el error va en la dirección
+ * segura: nunca afirma que hay CLI donde no lo hay.
+ *
+ * El alta de una cuenta (`createWslProfile`) NO pasa por acá a propósito: ahí
+ * el usuario acaba de instalar el CLI y espera que se lo vea al instante.
+ */
+const cliPorDistro = new Map<string, boolean>();
+
+async function hayCliRecordado(distro: string, corriendo: string[]): Promise<boolean> {
+  // Se olvida todo lo que ya no corre: al volver a arrancar, el PATH de login
+  // puede ser otro.
+  for (const conocida of [...cliPorDistro.keys()]) {
+    if (!corriendo.includes(conocida)) cliPorDistro.delete(conocida);
+  }
+  const recordado = cliPorDistro.get(distro);
+  if (recordado !== undefined) return recordado;
+  const hay = await hayCliEn(distro);
+  cliPorDistro.set(distro, hay);
+  return hay;
+}
+
 export async function raices(): Promise<Raiz[]> {
   const registry = await loadRegistry();
   const salida: Raiz[] = [
@@ -282,7 +318,7 @@ export async function raices(): Promise<Raiz[]> {
     // Sólo se mira el disco si la distro YA está corriendo. Si no, ni se toca.
     const arranca = corriendo.includes(distro) && instaladas.includes(distro);
     const hayConfig = arranca ? Boolean(await stat(p.configDir).catch(() => null)) : false;
-    const hayCli = arranca ? await hayCliEn(distro) : false;
+    const hayCli = arranca ? await hayCliRecordado(distro, corriendo) : false;
     salida.push({
       configDir: p.configDir,
       entorno: p.entorno,

@@ -151,13 +151,13 @@ export async function ensureHostScript(
  */
 export async function ensureAll(profiles: Profile[], sharedRoot: string): Promise<void> {
   for (const profile of profiles) {
-    // El filtro va ANTES de llamar a ensureHostScript, para no rozar el disco
-    // de una cuenta WSL en absoluto. Ver `esWsl` en wsl.ts. Igual se le pasa
-    // el entorno a ensureHostScript: que su guard dependa de este `continue`
-    // para no ejercitarse nunca es lo que lo deja sin efecto el día que
-    // alguien borre este filtro.
+    // El filtro va ANTES de las dos llamadas, para no rozar el disco de una
+    // cuenta WSL en absoluto. Ver `esWsl` en wsl.ts. Igual se les pasa el
+    // entorno a las dos: que sus guards dependan de este `continue` para no
+    // ejercitarse nunca es lo que los deja sin efecto el día que alguien borre
+    // este filtro.
     if (esWsl(profile.entorno)) continue;
     await ensureHostScript(profile.configDir, sharedRoot, profile.entorno).catch(() => {});
-    await pruneStalePairing(profile.configDir, profile.id).catch(() => {});
+    await pruneStalePairing(profile.configDir, profile.id, profile.entorno).catch(() => {});
   }
 }

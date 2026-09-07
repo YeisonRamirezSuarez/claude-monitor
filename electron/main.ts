@@ -31,7 +31,7 @@ import { openTerminal } from './terminal';
 import { tokensFor } from './tokens';
 import { readTranscript } from './transcript';
 import { readUsage } from './usage';
-import { cuentaParaSesion, distrosCorriendo, distrosInstaladas, encenderDistro } from './wsl';
+import { cuentaParaSesion, distrosCorriendo, distrosInstaladas, encenderDistro, esWsl } from './wsl';
 import type { Profile, ProfileWithStatus, Raiz, Result, SessionMeta } from '../shared/types';
 
 /** Envuelve un handler para que el renderer nunca reciba una excepción cruda. */
@@ -173,6 +173,25 @@ async function closeSetupBrowsers(profiles: ProfileWithStatus[]): Promise<void> 
   );
 }
 
+/**
+ * El barrido de raíces del refresco en curso, que `sessions:list` deja servido
+ * para que `sessions:tokens` no lo repita.
+ *
+ * El panel dispara los dos handlers juntos en cada foco de ventana (ver
+ * `refresh` en `src/App.tsx`), y cada barrido cuesta dos listados de `wsl.exe`
+ * más un `hayCliEn` por cuenta WSL. Duplicarlo era pagar todo eso dos veces por
+ * alt-tab.
+ *
+ * Se consume UNA vez: el que lo toma lo borra. Así un `sessions:tokens` suelto
+ * —o uno que llegue tarde, después de que otro refresco ya lo haya usado— hace
+ * su propio barrido en vez de trabajar sobre una lista vieja.
+ */
+let barridoServido: Array<{ sesiones: SessionMeta[]; raiz: Raiz }> | null = null;
+
+async function barrerRaices(): Promise<Array<{ sesiones: SessionMeta[]; raiz: Raiz }>> {
+  return Promise.all((await raices()).map(leerRaiz));
+}
+
 function registerHandlers() {
   // La lista se refresca sola cada vez que la ventana toma el foco, así que es
   // también el momento en que la app se entera de que el usuario ya terminó lo
@@ -224,16 +243,27 @@ function registerHandlers() {
     //
     // Se abre Chrome en el paso que falte —`nextStepUrl` decide cuál— y se
     // frena con la explicación de ese paso, uno por vez.
-    const estado = await chromeStatus(profile.id, profile.name);
-    if (!estado.extension || !estado.loggedIn) {
-      await openChromeForProfile(profile.id, profile.name).catch(() => {});
-      throw new Error(
-        !estado.extension
-          ? `Paso 1: instalá la extensión de Claude en el Chrome de "${profile.name}", que se acaba de abrir en la tienda. ` +
-            'Las extensiones son por perfil, así que va una vez por cada cuenta. Después volvé y tocá "Configurar Claude" otra vez.'
-          : `Paso 2: iniciá sesión en claude.ai dentro del Chrome de "${profile.name}", que se acaba de abrir. ` +
-            'Después volvé y tocá "Configurar Claude". Si autorizás en tu Chrome de siempre, la sesión queda guardada ahí y la extensión no funciona.'
-      );
+    //
+    // Nada de esto rige para una cuenta de WSL, y por eso se saltea entero: el
+    // puente de la extensión es un `.bat` de Windows que `ensureHostScript` se
+    // niega a escribir ahí (ver `esWsl` en wsl.ts), y el CLI que se autoriza
+    // corre en Linux. Sin el salteo, lo PRIMERO que toca un usuario de WSL
+    // después de dar de alta la cuenta es instalar una extensión en un Chrome
+    // descartable y loguearse en claude.ai ahí, para un navegador que nunca va
+    // a hablar con esa sesión. Se va directo a `startLogin`; la URL de
+    // autorización se sigue abriendo igual, abajo.
+    if (!esWsl(profile.entorno)) {
+      const estado = await chromeStatus(profile.id, profile.name);
+      if (!estado.extension || !estado.loggedIn) {
+        await openChromeForProfile(profile.id, profile.name).catch(() => {});
+        throw new Error(
+          !estado.extension
+            ? `Paso 1: instalá la extensión de Claude en el Chrome de "${profile.name}", que se acaba de abrir en la tienda. ` +
+              'Las extensiones son por perfil, así que va una vez por cada cuenta. Después volvé y tocá "Configurar Claude" otra vez.'
+            : `Paso 2: iniciá sesión en claude.ai dentro del Chrome de "${profile.name}", que se acaba de abrir. ` +
+              'Después volvé y tocá "Configurar Claude". Si autorizás en tu Chrome de siempre, la sesión queda guardada ahí y la extensión no funciona.'
+        );
+      }
     }
 
     const url = await startLogin(id, profile.configDir, profile.entorno);
@@ -319,6 +349,14 @@ function registerHandlers() {
   // sólo muestra un aviso suyo y la ventana queda abierta sin explicar nada.
   handle('desktop:resume', async (id: string) => {
     const { session } = await findSession(id);
+    // El guard vive acá y no sólo en el botón deshabilitado de la lista: la
+    // frontera es el handler, la UI es presentación. Ver §7 del spec — Desktop
+    // es una app de Windows y no puede hospedar una sesión de la distro.
+    if (session.entorno.tipo === 'wsl') {
+      throw new Error(
+        `Claude Desktop no puede abrir sesiones de ${session.entorno.distro}: es una app de Windows y el transcript vive adentro de la distro. Reanudala en terminal.`
+      );
+    }
     const { profile, relevo } = await profileForWork();
     return { ...(await openDesktopForProfile(profile, await getSharedRoot(), resumeLink(session.id))), relevo };
   });
@@ -348,7 +386,9 @@ function registerHandlers() {
   }));
 
   handle('sessions:list', async () => {
-    const leidas = await Promise.all((await raices()).map(leerRaiz));
+    const leidas = await barrerRaices();
+    // Servido para el `sessions:tokens` que el panel dispara justo después.
+    barridoServido = leidas;
     // Las raíces viajan con las sesiones: la UI necesita poder decir "distro
     // apagada" en vez de mostrar una lista corta sin explicación.
     return {
@@ -366,10 +406,17 @@ function registerHandlers() {
     const { profiles, activeProfileId } = await allProfiles();
     const target = cuentaParaSesion(session, profiles, activeProfileId);
     if (!target) {
+      // Los dos casos son `null` pero tienen causas opuestas, y confundirlos
+      // manda al usuario a hacer justo lo contrario de lo que necesita: en uno
+      // falta dar de alta una cuenta de WSL, en el otro sobra la que está
+      // activa. Ver `cuentaParaSesion`.
+      const activa = profiles.find((p) => p.id === activeProfileId);
       throw new Error(
         session.entorno.tipo === 'wsl'
           ? `No hay ninguna cuenta dada de alta para la distro "${session.entorno.distro}": sin ella no se puede reanudar esta sesión sin arriesgarse a abrirla con la cuenta equivocada. Agregala con "Agregar cuenta de WSL" y volvé a intentar.`
-          : 'No hay ninguna cuenta activa con la que reanudar esta sesión.'
+          : activa?.entorno?.tipo === 'wsl'
+            ? `La cuenta activa "${activa.name}" vive adentro de la distro "${activa.entorno.distro}" y esta sesión es de Windows: abrirla con esa cuenta arrancaría "claude" en el ~/.claude de la distro, que no contiene este transcript — la sesión no aparecería y nadie te diría por qué. Elegí arriba una cuenta de Windows y volvé a intentar.`
+            : 'No hay ninguna cuenta activa con la que reanudar esta sesión.'
       );
     }
     await requireLogin(target);
@@ -421,12 +468,20 @@ function registerHandlers() {
   // vez— y la lista tiene que poder aparecer antes que los números. Después
   // sólo se relee el archivo de la sesión que está corriendo. Ver `tokens.ts`.
   handle('sessions:tokens', async () => {
-    const leidas = await Promise.all((await raices()).map(leerRaiz));
+    const leidas = barridoServido ?? (await barrerRaices());
+    barridoServido = null;
     const sesiones = mezclarRaices(leidas.map((l) => l.sesiones));
     return tokensFor(sesiones.map((s) => ({ id: s.id, path: rutaDe(s) })));
   });
   handle('sessions:delete', async (id: string) => {
     const { session } = await findSession(id);
+    // Mismo motivo que en `desktop:resume`: el botón deshabilitado es la
+    // presentación, este canal es la frontera. Borrar sesiones de WSL no está
+    // habilitado en esta rebanada (§9 del spec) — y acá el borrado sí
+    // funcionaría por UNC, así que el guard no es decorativo.
+    if (session.entorno.tipo === 'wsl') {
+      throw new Error(`Borrar sesiones de ${session.entorno.distro} no está disponible todavía.`);
+    }
     await deleteSession(session.raiz, session.projectSlug, session.id);
     return null;
   });

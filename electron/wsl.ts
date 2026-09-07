@@ -33,13 +33,24 @@ export const WINDOWS: Entorno = { tipo: 'windows' };
  * activa: el transcript vive en la raíz de esa distro y sólo esa cuenta sabe
  * llegar. Devuelve `null` si esa cuenta ya no existe, para poder explicarlo en
  * vez de abrir una terminal con la cuenta equivocada.
+ *
+ * La dirección espejo también devuelve `null`, y no es teórica: `visibleProfiles`
+ * oculta la cuenta `default` en cuanto hay una propia, así que quien tiene una
+ * sola cuenta propia y es de WSL la tiene ACTIVA. Reanudar con ella una sesión
+ * de Windows abriría `claude` adentro de la distro con `CLAUDE_CONFIG_DIR`
+ * apuntando a un `~/.claude` de Linux que no contiene ese transcript: la ruta
+ * traduce bien, el `stat` da bien, y la sesión simplemente no aparece. Un fallo
+ * mudo es peor que negarse con una explicación.
  */
 export function cuentaParaSesion<T extends { id: string; entorno?: Entorno }>(
   sesion: { entorno: Entorno },
   cuentas: T[],
   activaId: string
 ): T | null {
-  if (sesion.entorno.tipo !== 'wsl') return cuentas.find((c) => c.id === activaId) ?? null;
+  if (sesion.entorno.tipo !== 'wsl') {
+    const activa = cuentas.find((c) => c.id === activaId) ?? null;
+    return activa && esWsl(activa.entorno) ? null : activa;
+  }
   const { distro } = sesion.entorno;
   return cuentas.find((c) => c.entorno?.tipo === 'wsl' && c.entorno.distro === distro) ?? null;
 }

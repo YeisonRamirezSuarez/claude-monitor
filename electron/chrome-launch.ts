@@ -5,6 +5,8 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { merge, readRecord, vale, writeRecord, type Observacion, type Visto } from './browser-store';
+import { esWsl } from './wsl';
+import type { Entorno } from '../shared/types';
 
 const run = promisify(execFile);
 
@@ -243,8 +245,21 @@ async function browserKnowsDevice(profileId: string, deviceId: string): Promise<
  * Sólo borra cuando de verdad se pudo mirar el almacén de la extensión y el
  * identificador no estaba. Si no se pudo mirar, se deja como está: un
  * emparejamiento bueno borrado por las dudas obliga a rehacerlo a mano.
+ *
+ * Y nunca sobre una cuenta de WSL: su `configDir` es la UNC de la distro, y
+ * leer ahí la ENCIENDE (medido: 1,90 s, 345 MB de `vmmemWSL`). El `continue` de
+ * `ensureAll` ya la saltea, pero el guard va acá igual, como en todas sus
+ * hermanas (`shareProjects`, `syncPlugins`, `markOnboardingDone`,
+ * `ensureHostScript`): que la única defensa sea el filtro del llamador es
+ * exactamente lo que deja de funcionar el día que alguien lo borre.
  */
-export async function pruneStalePairing(configDir: string, profileId: string): Promise<boolean> {
+export async function pruneStalePairing(
+  configDir: string,
+  profileId: string,
+  entorno?: Entorno
+): Promise<boolean> {
+  // `entorno` sin pasar significa Windows, igual que en `Profile`. Ver `esWsl`.
+  if (esWsl(entorno)) return false;
   const path = join(configDir, '.claude.json');
   const raw = await readFile(path, 'utf8').catch(() => null);
   if (raw === null) return false;

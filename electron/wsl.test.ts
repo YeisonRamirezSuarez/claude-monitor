@@ -269,6 +269,27 @@ describe('cuentaParaSesion', () => {
     const s = { entorno: { tipo: 'wsl', distro: 'Debian', home: '/home/v' } } as any;
     expect(cuentaParaSesion(s, cuentas, 'w1')).toBeNull();
   });
+
+  it('una sesión de Windows con la cuenta activa en WSL no se abre con ella', () => {
+    // La dirección espejo, y es alcanzable: `visibleProfiles` oculta la cuenta
+    // `default` en cuanto hay una propia, así que quien tiene una sola cuenta
+    // propia y es de WSL la tiene activa. Abrir ahí una sesión de Windows
+    // arrancaría `claude` adentro de la distro con un CLAUDE_CONFIG_DIR que no
+    // contiene ese transcript: la sesión no aparece y nadie explica por qué.
+    const s = { entorno: { tipo: 'windows' } } as any;
+    expect(cuentaParaSesion(s, cuentas, 'u1')).toBeNull();
+  });
+
+  it('una sesión de Windows con la activa de Windows sigue abriendo con la activa', () => {
+    // El caso que ya andaba: el arreglo de arriba no puede habérselo llevado.
+    const s = { entorno: { tipo: 'windows' } } as any;
+    const soloWindows = [
+      { id: 'w1', entorno: { tipo: 'windows' } },
+      { id: 'w2' }
+    ] as any;
+    expect(cuentaParaSesion(s, soloWindows, 'w2')?.id).toBe('w2');
+    expect(cuentaParaSesion(s, cuentas, 'w1')?.id).toBe('w1');
+  });
 });
 
 describe('argsDeLanzamiento', () => {
