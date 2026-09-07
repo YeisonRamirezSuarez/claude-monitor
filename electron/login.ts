@@ -74,7 +74,13 @@ export function comandoDeLogin(entorno: Entorno): {
   if (entorno.tipo === 'wsl') {
     return {
       command: 'wsl.exe',
-      args: ['-d', entorno.distro, '--', 'bash', '-lc', 'claude auth login'],
+      // `--exec` y no `--` (ni su alias `-e`): con `--` el comando pasa por el
+      // shell de login de la distro, que lo re-expande antes de que llegue a
+      // este `bash -lc` (ver el comentario de `argsDeLanzamiento` en `wsl.ts`).
+      // Acá el comando es un literal fijo así que no cambia el resultado, pero
+      // se usa `--exec` igual: la próxima llamada que se agregue en este
+      // archivo no debería tener que elegir entre dos formas de separar.
+      args: ['-d', entorno.distro, '--exec', 'bash', '-lc', 'claude auth login'],
       shell: false
     };
   }

@@ -206,7 +206,7 @@ export const distrosCorriendo = (): Promise<string[]> => consultar('corriendo');
  *  en `Entorno.home`: averiguarlo en cada arranque obligaría a encender la
  *  distro sólo para saber una ruta. */
 export async function homeDe(distro: string): Promise<string> {
-  const { stdout } = await run('wsl.exe', ['-d', distro, '--', 'bash', '-lc', 'echo $HOME'], {
+  const { stdout } = await run('wsl.exe', ['-d', distro, '--exec', 'bash', '-lc', 'echo $HOME'], {
     encoding: 'buffer',
     timeout: TIMEOUT_WSL,
     windowsHide: true
@@ -219,7 +219,7 @@ export async function homeDe(distro: string): Promise<string> {
 /** Si `claude` está en el PATH de login de la distro. `-l` porque nvm y
  *  compañía viven en el perfil de login. */
 export async function hayCliEn(distro: string): Promise<boolean> {
-  return run('wsl.exe', ['-d', distro, '--', 'bash', '-lc', 'command -v claude'], {
+  return run('wsl.exe', ['-d', distro, '--exec', 'bash', '-lc', 'command -v claude'], {
     encoding: 'buffer',
     timeout: TIMEOUT_WSL,
     windowsHide: true
@@ -232,7 +232,7 @@ export async function hayCliEn(distro: string): Promise<boolean> {
  *  y sólo corre porque el usuario apretó el botón: todo el resto del código
  *  evita encenderlas. */
 export async function encenderDistro(distro: string): Promise<void> {
-  await run('wsl.exe', ['-d', distro, '--', 'true'], { timeout: TIMEOUT_WSL, windowsHide: true });
+  await run('wsl.exe', ['-d', distro, '--exec', 'true'], { timeout: TIMEOUT_WSL, windowsHide: true });
 }
 
 /**
@@ -291,7 +291,7 @@ export function windowsAPosix(distro: string, p: string): string {
 /**
  * El argv de `wsl.exe` para abrir una sesión adentro de la distro.
  *
- * Dos decisiones que valen la pena:
+ * Tres decisiones que valen la pena:
  *
  *   - El `--cd` va como ARGUMENTO, no por la línea del shell. El `cwd` sale de
  *     un `.jsonl` y no es confiable; así nunca lo parsea un shell.
@@ -299,6 +299,16 @@ export function windowsAPosix(distro: string, p: string): string {
  *     `WSLENV` funciona (medido) pero es una variable GLOBAL del proceso que
  *     habría que componer sin pisar lo que el usuario ya tenga: un merge frágil
  *     por una ganancia nula.
+ *   - El separador es `--exec` (nunca `--`, ni su alias `-e`). `wsl.exe -- cmd`
+ *     corre `cmd` a través del shell DE LOGIN de la distro, que lo re-expande y
+ *     re-parsea antes de que llegue a nuestro `bash -lc` — por eso, medido,
+ *     `wsl -d Ubuntu -- bash -lc 'X=1; echo "[$X]"'` imprimía `[]`: el `$X` de
+ *     afuera ya se había expandido a vacío. `--exec` pasa el argv literal, sin
+ *     esa ronda extra, y con ella el `export CLAUDE_CONFIG_DIR=…` de acá abajo
+ *     SÍ le llega al script (medido: con `--` salía vacío, con `--exec` salía
+ *     el valor). Sin `--exec` el `cwd` y la etiqueta —ninguno de los dos es
+ *     confiable— también pasarían por esa ronda extra de shell, que es
+ *     exactamente lo que se evita yendo por `--cd` en vez de por el script.
  *
  * `bash -lc` y no `bash -c`: el PATH con `claude` adentro suele venir del
  * perfil de login (nvm y compañía).
@@ -313,5 +323,5 @@ export function argsDeLanzamiento(
   const script = [`export CLAUDE_CONFIG_DIR=${shQuote(configDirPosix)}`, bannerBash(command, label)].join(
     '\n'
   );
-  return ['-d', distro, '--cd', cwdPosix, '--', 'bash', '-lc', script];
+  return ['-d', distro, '--cd', cwdPosix, '--exec', 'bash', '-lc', script];
 }

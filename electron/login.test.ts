@@ -50,7 +50,9 @@ describe('comandoDeLogin', () => {
   it('en WSL corre adentro de la distro, no el CLI de Windows', () => {
     expect(comandoDeLogin({ tipo: 'wsl', distro: 'Ubuntu', home: '/home/v' })).toEqual({
       command: 'wsl.exe',
-      args: ['-d', 'Ubuntu', '--', 'bash', '-lc', 'claude auth login'],
+      // --exec, no --: con -- el comando pasa por el shell de login de la
+      // distro, que lo re-parsea antes de llegar a este bash -lc.
+      args: ['-d', 'Ubuntu', '--exec', 'bash', '-lc', 'claude auth login'],
       shell: false
     });
   });

@@ -279,6 +279,20 @@ describe('argsDeLanzamiento', () => {
     expect(args.slice(0, 4)).toEqual(['-d', 'Ubuntu', '--cd', '/home/vos/proy']);
   });
 
+  it('el separador es --exec, no --', () => {
+    // Medido: `wsl -- cmd` corre `cmd` a traves del shell de login de la
+    // distro, que lo re-expande antes de que llegue a nuestro `bash -lc`.
+    // `--exec` pasa el argv literal, sin esa ronda extra.
+    expect(args[4]).toBe('--exec');
+  });
+
+  it('no aparece un -- pelado en ningun lado del argv', () => {
+    // `--` mete una ronda de shell extra (la de la distro) antes de que el
+    // comando llegue a nuestro `bash -lc`; `--exec` no. Si esto vuelve a
+    // aparecer, alguien "simplifico" el separador de vuelta a `--`.
+    expect(args).not.toContain('--');
+  });
+
   it('bash -lc: hace falta el perfil de login para que claude este en el PATH', () => {
     expect(args).toContain('-lc');
     expect(args[args.indexOf('-lc') - 1]).toBe('bash');
