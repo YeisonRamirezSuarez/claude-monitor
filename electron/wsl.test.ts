@@ -222,4 +222,27 @@ describe('windowsAPosix', () => {
   it('una ruta que no es ni la UNC de la distro ni un disco no se sabe traducir', () => {
     expect(() => windowsAPosix('Ubuntu', 'algo/que/no/es/una/ruta/windows')).toThrow();
   });
+
+  it('la raíz pelada de la distro, sin subcarpeta y sin barra final', () => {
+    // El diálogo de carpeta de Windows devuelve rutas SIN barra final salvo
+    // en la raíz de un volumen. Elegir la raíz de la distro cae acá.
+    expect(windowsAPosix('Ubuntu', '\\\\wsl.localhost\\Ubuntu')).toBe('/');
+  });
+
+  it('la raíz de la distro con barra final, por simetría con C: / C:\\', () => {
+    expect(windowsAPosix('Ubuntu', '\\\\wsl.localhost\\Ubuntu\\')).toBe('/');
+  });
+
+  it('la raíz pelada NO matchea una distro cuyo nombre la tiene como prefijo', () => {
+    // Regresión del arreglo anterior: si la raíz pelada matcheara con
+    // startsWith(raiz) sin exigir el separador después, 'Ubuntu' sería
+    // prefijo de 'Ubuntu-22.04' y esto NO lanzaría.
+    expect(() =>
+      windowsAPosix('Ubuntu', '\\\\wsl.localhost\\Ubuntu-22.04\\home\\vos')
+    ).toThrow();
+  });
+
+  it('letra de unidad en minúscula', () => {
+    expect(windowsAPosix('Ubuntu', 'c:\\Users\\x')).toBe('/mnt/c/Users/x');
+  });
 });

@@ -239,9 +239,18 @@ export function windowsAPosix(distro: string, p: string): string {
   // distingue) — no una RegExp con el nombre de la distro interpolado sin
   // escapar: 'Ubuntu-22.04' ya tiene un punto, que en regex matchea cualquier
   // carácter, y la UNC de otra distro pasaría como si fuera de esta.
-  const prefijoUNC = `\\\\wsl.localhost\\${distro}\\`.toLowerCase();
-  if (p.toLowerCase().startsWith(prefijoUNC)) {
-    return '/' + p.slice(prefijoUNC.length).split('\\').filter(Boolean).join('/');
+  //
+  // La raíz pelada (sin barra final, `\\wsl.localhost\Ubuntu`) matchea
+  // aparte y no con `startsWith(raiz)`: eso reintroduciría la misma colisión
+  // de prefijos de arriba, porque 'Ubuntu' es prefijo de 'Ubuntu-22.04'. Hace
+  // falta el chequeo exacto o el separador después de la raíz. La raíz
+  // pelada es alcanzable: el diálogo de carpeta de Windows devuelve rutas
+  // SIN barra final salvo en la raíz de un volumen.
+  const raizUNC = `\\\\wsl.localhost\\${distro}`.toLowerCase();
+  const pLower = p.toLowerCase();
+  if (pLower === raizUNC || pLower.startsWith(raizUNC + '\\')) {
+    const resto = p.slice(raizUNC.length).replace(/^\\/, '');
+    return '/' + resto.split('\\').filter(Boolean).join('/');
   }
   const disco = /^([a-zA-Z]):\\?(.*)$/.exec(p);
   if (disco) {
