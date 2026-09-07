@@ -187,14 +187,14 @@ export default function SessionList({
         <button
           className="primary"
           disabled={activeProfileEntorno.tipo === 'wsl'}
-          title={activeProfileEntorno.tipo === 'wsl' ? motivoDeshabilitado(activeProfileEntorno) : undefined}
+          title={motivoDeshabilitado(activeProfileEntorno)}
           onClick={onNewSession}
         >
           Nueva en terminal…
         </button>
         <button
           disabled={activeProfileEntorno.tipo === 'wsl'}
-          title={activeProfileEntorno.tipo === 'wsl' ? motivoDeshabilitado(activeProfileEntorno) : undefined}
+          title={motivoDeshabilitado(activeProfileEntorno)}
           onClick={onNewSessionInDesktop}
         >
           Nueva en Desktop…
@@ -269,7 +269,7 @@ export default function SessionList({
             <button
               className="danger"
               disabled={s.entorno.tipo === 'wsl'}
-              title={s.entorno.tipo === 'wsl' ? motivoDeshabilitado(s.entorno) : undefined}
+              title={motivoDeshabilitado(s.entorno)}
               onClick={() => setConfirmId(s.id)}
             >
               Borrar

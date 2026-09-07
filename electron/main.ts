@@ -130,6 +130,13 @@ async function requireLogin(profile: Profile): Promise<void> {
  * sesión sería mucho peor.
  */
 async function openTerminalAs(cwd: string, command: string, profile: Profile) {
+  // Frontera provisoria de la rebanada de lectura: `ensureHostScript` y
+  // `readUsage`, más abajo, tocan `configDir` — que en una cuenta WSL es la
+  // UNC, y tocarla enciende la distro. La Task 11 reemplaza este `throw` por
+  // la bifurcación real del lanzador.
+  if (profile.entorno?.tipo === 'wsl') {
+    throw new Error(`Todavía no se puede abrir una terminal para la cuenta de ${profile.entorno.distro}.`);
+  }
   await ensureHostScript(profile.configDir, await getSharedRoot(), profile.entorno).catch((error) => {
     console.warn('No se pudo fijar la cuenta en el puente de Chrome:', error);
   });

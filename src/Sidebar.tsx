@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
-import type { AccountUsage, ProfileList, ProfileWithStatus, Raiz, SessionMeta } from '../shared/types';
+import type { AccountUsage, Entorno, ProfileList, ProfileWithStatus, Raiz, SessionMeta } from '../shared/types';
 import AccountIcon from './AccountIcon';
-import { projectName, relativeDate } from './format';
+import { motivoDeshabilitado, projectName, relativeDate } from './format';
 
 const FULL_DATE = new Intl.DateTimeFormat('es', { dateStyle: 'medium', timeStyle: 'short' });
 
@@ -322,6 +322,10 @@ export default function Sidebar(props: Props) {
   // rastro a cuál estaba en uso.
   const active = profileList?.profiles.find((p) => p.id === profileList.activeProfileId) ?? null;
   const others = profileList?.profiles.filter((p) => p.id !== profileList.activeProfileId) ?? [];
+  // Crear con la cuenta activa necesita el lanzador de WSL (rebanada 2,
+  // todavía no construido). Windows por defecto si no hay cuenta activa,
+  // igual que en SessionList.
+  const activeProfileEntorno: Entorno = active?.entorno ?? { tipo: 'windows' };
 
   // `sessions` llega ordenada por mtime descendente desde electron/sessions.ts,
   // así que group[0] es la sesión más reciente del proyecto.
@@ -481,8 +485,12 @@ export default function Sidebar(props: Props) {
             </button>
             {nuevoEn === slug && (
               <div className="nueva-en">
+                {/* Igual que la barra de SessionList: crear con la cuenta
+                    activa necesita el lanzador de WSL, que todavía no existe. */}
                 <button
                   className="link"
+                  disabled={activeProfileEntorno.tipo === 'wsl'}
+                  title={motivoDeshabilitado(activeProfileEntorno)}
                   onClick={() => {
                     setNuevoEn(null);
                     props.onNewSessionIn(group[0].cwd);
@@ -492,6 +500,8 @@ export default function Sidebar(props: Props) {
                 </button>
                 <button
                   className="link"
+                  disabled={activeProfileEntorno.tipo === 'wsl'}
+                  title={motivoDeshabilitado(activeProfileEntorno)}
                   onClick={() => {
                     setNuevoEn(null);
                     props.onNewSessionInDesktop(group[0].cwd);
