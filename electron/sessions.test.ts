@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtemp, mkdir, writeFile, appendFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseSessionLines, listSessions, deleteSession } from './sessions';
+import { parseSessionLines, listSessions, deleteSession, mezclarRaices } from './sessions';
 import { WINDOWS } from './wsl';
 
 async function exists(path: string): Promise<boolean> {
@@ -235,6 +235,22 @@ describe('identidad de la sesión: el archivo, no el sessionId de adentro', () =
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe('mezclarRaices', () => {
+  const w = { tipo: 'windows' } as const;
+  const u = { tipo: 'wsl', distro: 'Ubuntu', home: '/home/vos' } as const;
+
+  it('intercala por fecha, sin importar de qué raíz salió cada una', () => {
+    const a = [{ id: 'a', mtime: 100, raiz: 'C:\\p', entorno: w }] as any;
+    const b = [{ id: 'b', mtime: 200, raiz: '\\\\wsl.localhost\\Ubuntu', entorno: u }] as any;
+    expect(mezclarRaices([a, b]).map((s) => s.id)).toEqual(['b', 'a']);
+  });
+
+  it('una raíz vacía no rompe la mezcla', () => {
+    const a = [{ id: 'a', mtime: 100, raiz: 'C:\\p', entorno: w }] as any;
+    expect(mezclarRaices([a, []]).map((s) => s.id)).toEqual(['a']);
   });
 });
 

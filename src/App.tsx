@@ -50,9 +50,9 @@ export default function App() {
       const profiles = unwrap(await window.claudeMonitor.listProfiles(), setError);
       if (mine !== runId.current) return;
       if (profiles) setProfileList(profiles);
-      const list = unwrap(await window.claudeMonitor.listSessions(), setError);
+      const listado = unwrap(await window.claudeMonitor.listSessions(), setError);
       if (mine !== runId.current) return;
-      setSessions(list ?? []);
+      setSessions(listado?.sesiones ?? []);
     } catch (e) {
       if (mine !== runId.current) return;
       setError(e instanceof Error ? e.message : String(e));

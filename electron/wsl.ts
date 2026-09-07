@@ -199,3 +199,10 @@ export async function hayCliEn(distro: string): Promise<boolean> {
     .then(({ stdout }) => decodificarSalidaWsl(Buffer.from(stdout)).trim().length > 0)
     .catch(() => false);
 }
+
+/** Enciende una distro a propósito. Es el ÚNICO lugar del proyecto que lo hace,
+ *  y sólo corre porque el usuario apretó el botón: todo el resto del código
+ *  evita encenderlas. */
+export async function encenderDistro(distro: string): Promise<void> {
+  await run('wsl.exe', ['-d', distro, '--', 'true'], { timeout: TIMEOUT_WSL, windowsHide: true });
+}

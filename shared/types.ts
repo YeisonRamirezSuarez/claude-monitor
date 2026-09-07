@@ -152,6 +152,15 @@ export type ClaudeMonitorApi = {
   createProfile: (name: string) => Promise<Result<Profile>>;
   setActiveProfile: (id: string) => Promise<Result<null>>;
   deleteProfile: (id: string) => Promise<Result<null>>;
+  /** Las distros de WSL instaladas, para elegir una al dar de alta una cuenta
+   *  que vive ahí. No enciende ninguna: `wsl -l -q` lista sin tocar el disco. */
+  listarDistrosWsl: () => Promise<Result<string[]>>;
+  /** Da de alta una cuenta que vive en una distro de WSL. El `configDir` es
+   *  ADOPTADO: no se crea nada en disco. Ver `createWslProfile` en `profiles.ts`. */
+  createWslProfile: (name: string, distro: string) => Promise<Result<Profile>>;
+  /** Enciende una distro a propósito, porque el usuario apretó el botón. Es el
+   *  único lugar de la app que lo hace — ver `encenderDistro` en `wsl.ts`. */
+  encenderDistro: (distro: string) => Promise<Result<void>>;
   /** Arranca el login de una cuenta y abre la autorización en el Chrome de esa
    *  misma cuenta, no en el navegador por defecto. Devuelve la URL abierta;
    *  después hay que mandar el código con `submitLoginCode`. */
@@ -159,8 +168,10 @@ export type ClaudeMonitorApi = {
   /** El código que el usuario copia del navegador para terminar el login. */
   submitLoginCode: (id: string, code: string) => Promise<Result<null>>;
   cancelLogin: (id: string) => Promise<Result<null>>;
-  /** Las sesiones del pozo compartido, ordenadas por fecha. */
-  listSessions: () => Promise<Result<SessionMeta[]>>;
+  /** Las sesiones de todas las raíces, ordenadas por fecha, junto con el
+   *  estado de cada raíz — la UI necesita poder decir "distro apagada" en vez
+   *  de mostrar una lista corta sin explicación. */
+  listSessions: () => Promise<Result<{ sesiones: SessionMeta[]; raices: Raiz[] }>>;
   /** Reanuda con la cuenta ACTIVA: es la que consume los tokens. Devuelve
    *  cuántas veces se compactó — si es > 0, Claude arranca desde el último
    *  resumen y el historial previo no vuelve. */

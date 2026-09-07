@@ -11,25 +11,27 @@ import { cancelLogin, loginPending, startLogin, submitCode } from './login';
 import { markOnboardingDone } from './onboarding';
 import {
   createProfile,
+  createWslProfile,
   deleteProfile,
   getProfile,
   getSharedRoot,
   getActiveProfile,
   listProfiles,
   profileForWork,
+  raices,
   setActiveProfile,
   ensureChromeHosts,
   markOnboardingAll,
   shareAllProjects,
   syncAllPlugins
 } from './profiles';
-import { countCompactions, deleteSession, listSessions } from './sessions';
+import { countCompactions, deleteSession, listSessions, mezclarRaices } from './sessions';
 import { openTerminal } from './terminal';
 import { tokensFor } from './tokens';
 import { readTranscript } from './transcript';
 import { readUsage } from './usage';
-import { WINDOWS } from './wsl';
-import type { Profile, ProfileWithStatus, Result } from '../shared/types';
+import { distrosCorriendo, distrosInstaladas, encenderDistro } from './wsl';
+import type { Profile, ProfileWithStatus, Raiz, Result, SessionMeta } from '../shared/types';
 
 /** Envuelve un handler para que el renderer nunca reciba una excepción cruda. */
 function handle<T>(channel: string, fn: (...args: any[]) => Promise<T>) {
@@ -46,14 +48,41 @@ function handle<T>(channel: string, fn: (...args: any[]) => Promise<T>) {
  * el id termina interpolado en la linea de comando de una terminal externa. */
 const SESSION_ID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
-/** Las sesiones son un pozo compartido: viven en un único directorio que todas
- *  las cuentas ven. La cuenta activa sólo decide qué credenciales se usan. */
+/** Busca la sesión en todas las raíces, no en un pozo único: cada cuenta WSL
+ *  trae la suya, y las que no se pueden leer (distro apagada, sin config) se
+ *  saltean sin tocarlas. */
 async function findSession(id: string) {
   if (typeof id !== 'string' || !SESSION_ID.test(id)) throw new Error(`Id de sesión inválido: ${id}`);
-  const sharedRoot = await getSharedRoot();
-  const session = (await listSessions(sharedRoot, WINDOWS)).find((s) => s.id === id);
-  if (!session) throw new Error(`Sesión no encontrada: ${id}`);
-  return { sharedRoot, session };
+  for (const raiz of await raices()) {
+    if (raiz.estado.tipo !== 'ok') continue;
+    const session = (await listSessions(raiz.configDir, raiz.entorno)).find((s) => s.id === id);
+    if (session) return { session };
+  }
+  throw new Error(`Sesión no encontrada: ${id}`);
+}
+
+/** La ruta del transcript de una sesión, desde la raíz que la contiene. Antes
+ *  se armaba con `sharedRoot`, que asumía una sola. */
+const rutaDe = (s: SessionMeta) => join(s.raiz, 'projects', s.projectSlug, `${s.id}.jsonl`);
+
+/**
+ * Lee una raíz y, si vino vacía, confirma que sea por falta de sesiones y no
+ * porque la distro se apagó en el medio.
+ *
+ * La carrera es real, no hipotética: se observó a la distro encenderse al
+ * tocar la UNC y apagarse sola por inactividad antes del chequeo siguiente. Si
+ * eso pasa entre `raices()` y la lectura, `listSessions` come el error de
+ * `readdir` y devuelve `[]` — y las sesiones desaparecerían sin explicación,
+ * que es justo lo prohibido. La reconsulta cuesta 0,12 s y sólo ocurre en el
+ * caso de cero sesiones.
+ */
+async function leerRaiz(r: Raiz): Promise<{ sesiones: SessionMeta[]; raiz: Raiz }> {
+  if (r.estado.tipo !== 'ok') return { sesiones: [], raiz: r };
+  const sesiones = await listSessions(r.configDir, r.entorno);
+  if (sesiones.length > 0 || r.entorno.tipo !== 'wsl') return { sesiones, raiz: r };
+  const corriendo = await distrosCorriendo();
+  if (corriendo.includes(r.entorno.distro)) return { sesiones, raiz: r };
+  return { sesiones: [], raiz: { ...r, estado: { tipo: 'apagada', mensaje: 'Distro apagada' } } };
 }
 
 /**
@@ -310,16 +339,24 @@ function registerHandlers() {
     desktop: profileId ? await registroDeDesktop(desktopDir(profileId)) : []
   }));
 
-  handle('sessions:list', async () => listSessions(await getSharedRoot(), WINDOWS));
+  handle('sessions:list', async () => {
+    const leidas = await Promise.all((await raices()).map(leerRaiz));
+    // Las raíces viajan con las sesiones: la UI necesita poder decir "distro
+    // apagada" en vez de mostrar una lista corta sin explicación.
+    return {
+      sesiones: mezclarRaices(leidas.map((l) => l.sesiones)),
+      raices: leidas.map((l) => l.raiz)
+    };
+  });
   // Reanuda con la cuenta activa. No hay que mover nada: su `projects` es el
   // mismo directorio donde ya está el transcript.
   handle('sessions:resume', async (id: string) => {
-    const { sharedRoot, session } = await findSession(id);
+    const { session } = await findSession(id);
     const { profile: target, relevo } = await profileForWork();
     await requireLogin(target);
     await openTerminalAs(session.cwd, `claude --resume ${session.id}`, target);
     return {
-      compactions: await countCompactions(join(sharedRoot, 'projects', session.projectSlug, `${session.id}.jsonl`)),
+      compactions: await countCompactions(rutaDe(session)),
       relevo
     };
   });
@@ -345,25 +382,30 @@ function registerHandlers() {
   // reproduce la conversación al reanudar, pero lo que pasa del scrollback se
   // pierde; acá está todo lo que quedó grabado.
   handle('sessions:transcript', async (id: string) => {
-    const { sharedRoot, session } = await findSession(id);
-    return readTranscript(join(sharedRoot, 'projects', session.projectSlug, `${session.id}.jsonl`));
+    const { session } = await findSession(id);
+    return readTranscript(rutaDe(session));
   });
   // El consumo de cada sesión. Va aparte de `sessions:list` porque obliga a
   // leer los transcripts enteros —558 MB en esta máquina, 2,5 s la primera
   // vez— y la lista tiene que poder aparecer antes que los números. Después
   // sólo se relee el archivo de la sesión que está corriendo. Ver `tokens.ts`.
   handle('sessions:tokens', async () => {
-    const sharedRoot = await getSharedRoot();
-    const sessions = await listSessions(sharedRoot, WINDOWS);
-    return tokensFor(
-      sessions.map((s) => ({ id: s.id, path: join(sharedRoot, 'projects', s.projectSlug, `${s.id}.jsonl`) }))
-    );
+    const leidas = await Promise.all((await raices()).map(leerRaiz));
+    const sesiones = mezclarRaices(leidas.map((l) => l.sesiones));
+    return tokensFor(sesiones.map((s) => ({ id: s.id, path: rutaDe(s) })));
   });
   handle('sessions:delete', async (id: string) => {
-    const { sharedRoot, session } = await findSession(id);
-    await deleteSession(sharedRoot, session.projectSlug, session.id);
+    const { session } = await findSession(id);
+    await deleteSession(session.raiz, session.projectSlug, session.id);
     return null;
   });
+
+  // El alta de una cuenta que vive en una distro de WSL: listar las
+  // instaladas para elegir, y crear el perfil adoptando su `~/.claude`.
+  handle('profiles:listarDistros', async () => distrosInstaladas());
+  handle('profiles:createWsl', (name: string, distro: string) => createWslProfile(name, distro));
+  // Sólo acá se enciende una distro, y sólo porque el usuario apretó el botón.
+  handle('wsl:encender', (distro: string) => encenderDistro(distro));
 }
 
 function createWindow() {

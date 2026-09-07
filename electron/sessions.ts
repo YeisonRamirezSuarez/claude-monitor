@@ -98,6 +98,10 @@ async function readSessionFile(filePath: string): Promise<ParsedSession | null> 
  * sólo la última cuenta recorrida. Se borran nada más las entradas de ESTE
  * configDir que el recorrido ya no vio (archivos borrados), así que tampoco
  * quedan entradas colgadas creciendo sin límite.
+ *
+ * Invariante: cada `configDir` pertenece a un único `entorno`. Si dos raíces
+ * compartieran `configDir` con `entorno` distinto, la clave (mtimeMs, size) no
+ * los distinguiría y una serviría cacheado el `entorno` de la otra.
  */
 type FileCacheEntry = { mtimeMs: number; size: number; meta: SessionMeta };
 const cache = new Map<string, FileCacheEntry>();
@@ -168,6 +172,12 @@ export async function listSessions(configDir: string, entorno: Entorno): Promise
   }
   for (const [key, entry] of nextCache) cache.set(key, entry);
   return sessions;
+}
+
+/** Une lo que devolvió cada raíz en una sola lista por fecha. Va aparte de
+ *  `listSessions` para poder probar el orden sin tocar disco. */
+export function mezclarRaices(porRaiz: SessionMeta[][]): SessionMeta[] {
+  return porRaiz.flat().sort((a, b) => b.mtime - a.mtime);
 }
 
 /**
