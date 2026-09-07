@@ -1,6 +1,6 @@
 // electron/login.test.ts
 import { describe, it, expect } from 'vitest';
-import { looksSuccessful, parseAuthUrl } from './login';
+import { comandoDeLogin, looksSuccessful, parseAuthUrl } from './login';
 
 const URL =
   'https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a&response_type=code&' +
@@ -35,5 +35,23 @@ describe('looksSuccessful', () => {
 
   it('no confunde el pedido del código con haber entrado', () => {
     expect(looksSuccessful('Paste code here if prompted > ')).toBe(false);
+  });
+});
+
+describe('comandoDeLogin', () => {
+  it('en Windows, como hoy: un .cmd que necesita shell', () => {
+    expect(comandoDeLogin({ tipo: 'windows' })).toEqual({
+      command: 'claude',
+      args: ['auth', 'login'],
+      shell: true
+    });
+  });
+
+  it('en WSL corre adentro de la distro, no el CLI de Windows', () => {
+    expect(comandoDeLogin({ tipo: 'wsl', distro: 'Ubuntu', home: '/home/v' })).toEqual({
+      command: 'wsl.exe',
+      args: ['-d', 'Ubuntu', '--', 'bash', '-lc', 'claude auth login'],
+      shell: false
+    });
   });
 });

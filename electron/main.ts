@@ -236,7 +236,7 @@ function registerHandlers() {
       );
     }
 
-    const url = await startLogin(id, profile.configDir);
+    const url = await startLogin(id, profile.configDir, profile.entorno);
     const { needsExtension } = await openChromeForProfile(profile.id, profile.name, url).catch(() => {
       cancelLogin(id);
       throw new Error('No se pudo abrir Chrome para autorizar. ¿Está instalado?');

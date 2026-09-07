@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { sessionEnv } from './terminal';
+import { WINDOWS } from './wsl';
+import type { Entorno } from '../shared/types';
 
 /**
  * El login de una cuenta, conducido desde la app.
@@ -61,22 +63,53 @@ export function looksSuccessful(output: string): boolean {
  * navegador equivocado, que era el problema original.
  */
 
+/** Con qué se lanza el login. En Windows es un `.cmd`, que desde Node 20 no se
+ *  puede spawnear sin shell; en WSL es el CLI de la distro, y ahí no hace falta
+ *  shell porque `wsl.exe` es un ejecutable de verdad. */
+export function comandoDeLogin(entorno: Entorno): {
+  command: string;
+  args: string[];
+  shell: boolean;
+} {
+  if (entorno.tipo === 'wsl') {
+    return {
+      command: 'wsl.exe',
+      args: ['-d', entorno.distro, '--', 'bash', '-lc', 'claude auth login'],
+      shell: false
+    };
+  }
+  return { command: 'claude', args: ['auth', 'login'], shell: true };
+}
+
 /**
  * Arranca el login y devuelve la URL a abrir.
  *
  * El proceso queda vivo esperando el código: hay que llamar a `submitCode` o a
  * `cancelLogin`. Un intento anterior de la misma cuenta se cancela, para no
  * dejar procesos colgados si el usuario le da dos veces.
+ *
+ * En una cuenta WSL, `env` (con el `CLAUDE_CONFIG_DIR` de esta cuenta) queda
+ * puesto en el proceso `wsl.exe` de WINDOWS y no cruza a la distro —a
+ * propósito, no se usa `WSLENV`, ver el comentario de `argsDeLanzamiento` en
+ * `wsl.ts`—, así que el `claude` de adentro arranca sin esa variable y usa su
+ * default, `$HOME/.claude`. Eso SÍ coincide con el `configDir` que la app
+ * tiene registrado para la cuenta: `configDirUNC(distro, home)` en `wsl.ts` es
+ * justamente la vista UNC de `$HOME/.claude`, con el mismo `home` que se le
+ * preguntó a la distro una sola vez al darla de alta (`homeDe`, en `wsl.ts`).
+ * No es casualidad — es la misma cuenta ($HOME) preguntada dos veces por el
+ * mismo medio (`bash -lc`) — pero si el perfil de shell del usuario exporta un
+ * `CLAUDE_CONFIG_DIR` propio en `.bashrc`/`.profile`, ese override gana y deja
+ * de coincidir; ese riesgo ya existía antes de esta tarea (lo mismo le pasa a
+ * `hayCliEn`) y no se resuelve acá.
  */
-export async function startLogin(id: string, configDir: string): Promise<string> {
+export async function startLogin(id: string, configDir: string, entorno: Entorno = WINDOWS): Promise<string> {
   cancelLogin(id);
 
   const env = sessionEnv(process.env, configDir);
 
   return new Promise((resolve, reject) => {
-    // `shell: true` porque en Windows `claude` se resuelve por PATH y puede ser
-    // un .cmd, que desde Node 20 no se puede spawnear sin shell.
-    const child = spawn('claude', ['auth', 'login'], { env, shell: true });
+    const { command, args, shell } = comandoDeLogin(entorno);
+    const child = spawn(command, args, { env, shell });
     const state: Pending = { child, output: '' };
     pending.set(id, state);
 
@@ -85,6 +118,19 @@ export async function startLogin(id: string, configDir: string): Promise<string>
       reject(new Error('El login no devolvió una dirección para autorizar. Probá desde una terminal.'));
     }, URL_TIMEOUT_MS);
 
+    // `String(chunk)` decodifica el Buffer como UTF-8 (default de
+    // `Buffer.prototype.toString`). Con `wsl.exe` de por medio esto sigue
+    // siendo correcto para el caso feliz: la salida del `claude` que corre
+    // ADENTRO de la distro —la URL, "logged in"— la relaya tal cual, en los
+    // bytes del proceso de Linux, que son UTF-8 (ver `decodificarSalidaWsl` en
+    // `wsl.ts`). Donde esto se rompe es en un error de `wsl.exe` MISMO —distro
+    // apagada que no llega a levantar, nombre de distro que ya no existe—, que
+    // viene en UTF-16LE: decodificado como UTF-8 sale ilegible. El efecto es
+    // sólo cosmético (el mensaje de error queda con mojibake en vez de texto
+    // claro; `parseAuthUrl` igual da `null` y el flujo cae en el timeout o en
+    // el `reject` de siempre) y es un caso de borde -la distro se cae DESPUÉS
+    // de dada de alta la cuenta-, así que se deja así: no hace falta tocar
+    // nada más para esta tarea.
     const listo = (chunk: unknown) => {
       state.output += String(chunk);
       const url = parseAuthUrl(state.output);
