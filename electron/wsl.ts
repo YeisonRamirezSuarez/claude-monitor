@@ -136,15 +136,39 @@ export function argsDeConsulta(que: 'instaladas' | 'corriendo'): string[] {
   return que === 'corriendo' ? ['-l', '-q', '--running'] : ['-l', '-q'];
 }
 
-/** `wsl.exe` emite UTF-16LE. Con 'buffer' se decodifica acá y no se depende de
- *  la codificación por defecto del proceso. */
+/**
+ * Decodifica lo que escupe `wsl.exe`, que no siempre usa la misma codificación.
+ *
+ * Medido: la salida propia de wsl.exe —la lista de distros y también sus
+ * mensajes de error— viene en UTF-16LE ("Ubuntu" llega como 55 00 62 00 …).
+ * La salida de un comando que corre DENTRO de la distro la relaya wsl.exe tal
+ * cual, en los bytes del proceso de Linux, que son UTF-8. Decodificar a ciegas
+ * cualquiera de las dos rompe la otra —un `$HOME` con acento leído como utf16le
+ * queda ilegible, y la lista leída como utf8 queda con un NUL entre cada
+ * letra—, así que se mira el dato: los NUL intercalados de UTF-16LE no aparecen
+ * en un UTF-8 legítimo, donde 0x00 sólo puede ser el carácter NUL en sí.
+ *
+ * Alcanza con los primeros 16 bytes: en UTF-16LE, cualquier carácter ASCII
+ * —y toda salida de `wsl.exe` empieza con uno— trae su NUL en el byte
+ * siguiente, así que si la respuesta no está vacía el NUL aparece dentro de los
+ * dos primeros bytes. Mirar el buffer entero sólo agregaría el riesgo de que un
+ * NUL perdido en el medio de una salida larga de Linux la haga leer al revés.
+ */
+export function decodificarSalidaWsl(buf: Buffer): string {
+  const asomar = buf.subarray(0, 16);
+  return buf.toString(asomar.includes(0) ? 'utf16le' : 'utf8');
+}
+
+/** `wsl.exe` no siempre emite en la misma codificación. Con 'buffer' se
+ *  decodifica acá, mirando los bytes, y no se depende de la codificación por
+ *  defecto del proceso. Ver `decodificarSalidaWsl`. */
 async function consultar(que: 'instaladas' | 'corriendo'): Promise<string[]> {
   const { stdout } = await run('wsl.exe', argsDeConsulta(que), {
     encoding: 'buffer',
     timeout: TIMEOUT_WSL,
     windowsHide: true
   }).catch(() => ({ stdout: Buffer.alloc(0) }));
-  return parseDistros(Buffer.from(stdout).toString('utf16le'));
+  return parseDistros(decodificarSalidaWsl(Buffer.from(stdout)));
 }
 
 export const distrosInstaladas = (): Promise<string[]> => consultar('instaladas');
@@ -155,11 +179,11 @@ export const distrosCorriendo = (): Promise<string[]> => consultar('corriendo');
  *  distro sólo para saber una ruta. */
 export async function homeDe(distro: string): Promise<string> {
   const { stdout } = await run('wsl.exe', ['-d', distro, '--', 'bash', '-lc', 'echo $HOME'], {
-    encoding: 'utf8',
+    encoding: 'buffer',
     timeout: TIMEOUT_WSL,
     windowsHide: true
   });
-  const home = stdout.replace(/\0/g, '').trim();
+  const home = decodificarSalidaWsl(Buffer.from(stdout)).trim();
   if (!home.startsWith('/')) throw new Error(`No se pudo leer el $HOME de ${distro}`);
   return home;
 }
@@ -168,10 +192,10 @@ export async function homeDe(distro: string): Promise<string> {
  *  compañía viven en el perfil de login. */
 export async function hayCliEn(distro: string): Promise<boolean> {
   return run('wsl.exe', ['-d', distro, '--', 'bash', '-lc', 'command -v claude'], {
-    encoding: 'utf8',
+    encoding: 'buffer',
     timeout: TIMEOUT_WSL,
     windowsHide: true
   })
-    .then(({ stdout }) => stdout.trim().length > 0)
+    .then(({ stdout }) => decodificarSalidaWsl(Buffer.from(stdout)).trim().length > 0)
     .catch(() => false);
 }

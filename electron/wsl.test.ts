@@ -3,6 +3,7 @@ import {
   TIMEOUT_WSL,
   argsDeConsulta,
   configDirUNC,
+  decodificarSalidaWsl,
   esWsl,
   parseDistros,
   estadoDeRaiz,
@@ -27,6 +28,36 @@ describe('parseDistros', () => {
 
   it('conserva los nombres con espacios', () => {
     expect(parseDistros('Ubuntu 22.04\r\n')).toEqual(['Ubuntu 22.04']);
+  });
+});
+
+describe('decodificarSalidaWsl', () => {
+  it('la lista de distros sale en UTF-16LE y se decodifica bien', () => {
+    // Medido: "Ubuntu" llega como 55 00 62 00 75 00 6e 00 74 00 75 00.
+    const buf = Buffer.from('Ubuntu\r\nDebian\r\n', 'utf16le');
+    expect(decodificarSalidaWsl(buf)).toBe('Ubuntu\r\nDebian\r\n');
+  });
+
+  it('los mensajes de error de wsl.exe también son UTF-16LE', () => {
+    expect(decodificarSalidaWsl(Buffer.from('Error catastrófico\r\n', 'utf16le'))).toBe(
+      'Error catastrófico\r\n'
+    );
+  });
+
+  it('la salida de un comando de adentro de la distro es UTF-8', () => {
+    // `echo $HOME` lo corre Linux; wsl.exe relaya esos bytes tal cual.
+    expect(decodificarSalidaWsl(Buffer.from('/home/vos\n', 'utf8'))).toBe('/home/vos\n');
+  });
+
+  it('un $HOME con acento no queda con caracteres de reemplazo', () => {
+    // Forzar utf16le acá daría basura: es el caso que obliga a detectar.
+    const decodificado = decodificarSalidaWsl(Buffer.from('/home/josé\n', 'utf8'));
+    expect(decodificado).toBe('/home/josé\n');
+    expect(decodificado).not.toContain('�');
+  });
+
+  it('sin nada corriendo la salida es de cero bytes', () => {
+    expect(decodificarSalidaWsl(Buffer.alloc(0))).toBe('');
   });
 });
 

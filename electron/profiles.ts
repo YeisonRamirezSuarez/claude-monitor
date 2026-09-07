@@ -91,40 +91,39 @@ async function distrosVivas(profiles: Profile[]): Promise<string[]> {
 /**
  * Lo que se puede afirmar de una cuenta a la que NO se le puede mirar el disco.
  *
- * Son exactamente los valores que devuelven hoy `exists`, `authState`,
- * `chromeStatus` y `readUsage` cuando no hay nada que leer, para que la interfaz
- * no tenga que aprender un caso nuevo.
+ * Son exactamente los valores que devuelven hoy `exists`, `authState` y
+ * `readUsage` cuando no hay nada que leer, para que la interfaz no tenga que
+ * aprender un caso nuevo. `chrome` no está acá a propósito: lo pone el llamador
+ * con la lectura de verdad. Ver el comentario en `listProfiles`.
  */
-function sinMirar(p: Profile): ProfileWithStatus {
-  return {
-    ...p,
-    exists: false,
-    authenticated: false,
-    authExpiresAt: null,
-    chrome: { profileExists: false, extension: false, loggedIn: false, verified: false, seenAt: 0 },
-    usage: null
-  };
+function sinMirar(p: Profile): Omit<ProfileWithStatus, 'chrome'> {
+  return { ...p, exists: false, authenticated: false, authExpiresAt: null, usage: null };
 }
 
 export async function listProfiles(): Promise<{ activeProfileId: string; profiles: ProfileWithStatus[] }> {
   const registry = await loadRegistry();
   const visibles = visibleProfiles(registry.profiles);
-  // La compuerta NO es una optimización: `exists`, `authState`, `chromeStatus` y
-  // `readUsage` leen el `configDir`, y el de una cuenta WSL es una UNC — tocarla
-  // ENCIENDE la distro apagada del usuario (1,90 s, 345 MB de vmmemWSL). Esto
-  // corre en cada refresco del panel, así que sin compuerta la VM quedaría
-  // prendida para siempre por culpa del monitor.
+  // La compuerta NO es una optimización: `exists`, `authState` y `readUsage` leen
+  // el `configDir`, y el de una cuenta WSL es una UNC — tocarla ENCIENDE la distro
+  // apagada del usuario (1,90 s, 345 MB de vmmemWSL). Esto corre en cada refresco
+  // del panel, así que sin compuerta la VM quedaría prendida para siempre por
+  // culpa del monitor.
   const corriendo = await distrosVivas(visibles);
   const profiles = await Promise.all(
     visibles.map(async (p) => {
-      if (!sePuedeLeer(p.entorno, corriendo)) return sinMirar(p);
+      // Chrome queda AFUERA de la compuerta: es de Windows, no vive en la distro
+      // —`chromeStatus` sólo mira LOCALAPPDATA y el id, nunca el configDir—, y
+      // apagarlo a mano le borraría a la cuenta lo último que se supo de su
+      // navegador. Ver `merge` en browser-store.ts.
+      const chrome = await chromeStatus(p.id, p.name);
+      if (!sePuedeLeer(p.entorno, corriendo)) return { ...sinMirar(p), chrome };
       const auth = await authState(p.configDir);
       return {
         ...p,
         exists: await exists(p.configDir),
         authenticated: auth.authenticated,
         authExpiresAt: auth.expiresAt,
-        chrome: await chromeStatus(p.id, p.name),
+        chrome,
         usage: await readUsage(p.configDir)
       };
     })
