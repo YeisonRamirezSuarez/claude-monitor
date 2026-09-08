@@ -6,7 +6,8 @@ const usoDe = (...percents: number[]): AccountUsage => ({
   email: '',
   accountName: '',
   plan: '',
-  live: true,
+  origen: 'vivo',
+  motivo: '',
   fetchedAtMs: 1,
   limits: percents.map((percent, i) => ({
     kind: `k${i}`,

@@ -45,9 +45,14 @@ export type AccountUsage = {
   /** Nombre de la cuenta según la API. Vacío si no se pudo consultar en vivo. */
   accountName: string;
   plan: string;
-  /** Los números salen de la API en este momento. Si es false son la caché
-   *  que dejó el CLI, que puede estar horas atrasada. */
-  live: boolean;
+  /** De dónde salieron los números, por orden de confianza. `vivo` es la API en
+   *  este momento; `guardado` es lo último que la API contestó, que el panel
+   *  conserva en disco para que un tropiezo no borre las barras; `cli` es la
+   *  caché que escribe Claude Code, que puede estar días atrasada. */
+  origen: 'vivo' | 'guardado' | 'cli';
+  /** Por qué no se pudo consultar en vivo, o '' si se pudo. Ver `MotivoFalla`
+   *  en `electron/usage.ts`. */
+  motivo: string;
   /** Cuándo se trajeron estos números. 0 si no se sabe. */
   fetchedAtMs: number;
   limits: UsageLimit[];

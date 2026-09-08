@@ -86,6 +86,49 @@ export function relativeDate(ms: number): string {
   return 'hace un momento';
 }
 
+/**
+ * Qué contarle al usuario de cada motivo por el que no se pudo consultar en
+ * vivo. Dice qué hacer cuando hay algo que hacer: nombrar el problema y nada
+ * más deja al usuario igual de trabado que el silencio que había antes.
+ *
+ * Un motivo desconocido —uno nuevo del lado de `electron/usage.ts`— se muestra
+ * tal cual en vez de desaparecer, por el mismo criterio que un `kind` de límite
+ * que no conocemos.
+ */
+const MOTIVOS: Record<string, string> = {
+  'sin-credenciales': 'esta cuenta no tiene la sesión iniciada',
+  'token-vencido': 'el token venció; usá la cuenta una vez y se renueva solo',
+  'sin-limites': 'la API respondió sin límites',
+  'api-rechazo': 'la API rechazó la consulta',
+  'sin-respuesta': 'sin respuesta de la API (red o demora)'
+};
+
+export const textoDeMotivo = (motivo: string): string => MOTIVOS[motivo] ?? motivo;
+
+/**
+ * La línea al pie del consumo: de cuándo son los números y, si no son de ahora,
+ * por qué.
+ *
+ * Antes decía sólo "en vivo" o "caché del CLI", así que cuando el panel se
+ * quedaba sin números no había nada que mirar. El motivo es la mitad del
+ * arreglo: "el token venció" y "sin respuesta de la API" se ven igual en
+ * pantalla y se resuelven distinto.
+ */
+export function procedenciaDeConsumo(u: {
+  origen: 'vivo' | 'guardado' | 'cli';
+  motivo: string;
+  fetchedAtMs: number;
+}): string {
+  if (u.origen === 'vivo') return 'en vivo';
+  const cuando =
+    u.fetchedAtMs > 0
+      ? `${u.origen === 'cli' ? 'caché del CLI' : 'último dato'}, de ${relativeDate(u.fetchedAtMs)}`
+      : u.origen === 'cli'
+        ? 'caché del CLI'
+        : 'último dato';
+  return u.motivo ? `${cuando} · ${textoDeMotivo(u.motivo)}` : cuando;
+}
+
 /** Los tokens llegan a las centenas de millones: escritos enteros no se leen.
  *  Lo compacta `Intl` —"1,2 M", "345 mil"— en castellano y sin tabla propia. */
 const COMPACTO = new Intl.NumberFormat('es', { notation: 'compact', maximumFractionDigits: 1 });

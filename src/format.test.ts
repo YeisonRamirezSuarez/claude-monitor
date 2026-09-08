@@ -5,7 +5,9 @@ import {
   etiquetaDeEntorno,
   hablarDeChrome,
   motivoDeshabilitado,
-  seLeMiroElDisco
+  procedenciaDeConsumo,
+  seLeMiroElDisco,
+  textoDeMotivo
 } from './format';
 
 const WSL = { tipo: 'wsl', distro: 'Ubuntu', home: '/home/v' } as const;
@@ -95,5 +97,39 @@ describe('hablarDeChrome', () => {
   it('en Windows sí, que es donde el puente existe', () => {
     expect(hablarDeChrome({ tipo: 'windows' })).toBe(true);
     expect(hablarDeChrome(undefined)).toBe(true);
+  });
+});
+
+
+describe('procedenciaDeConsumo', () => {
+  it('en vivo no necesita explicaciones', () => {
+    expect(procedenciaDeConsumo({ origen: 'vivo', motivo: '', fetchedAtMs: Date.now() })).toBe('en vivo');
+  });
+
+  it('lo guardado dice de cuándo es Y por qué no es de ahora', () => {
+    // Las dos mitades importan: la antigüedad para saber cuánto confiar, y el
+    // motivo porque "el token venció" y "no hay red" se ven igual en pantalla
+    // pero se arreglan distinto.
+    const texto = procedenciaDeConsumo({
+      origen: 'guardado',
+      motivo: 'token-vencido',
+      fetchedAtMs: Date.now() - 3 * 3600_000
+    });
+    expect(texto).toContain('último dato, de hace 3 horas');
+    expect(texto).toContain('el token venció');
+  });
+
+  it('la caché del CLI se nombra como lo que es', () => {
+    expect(
+      procedenciaDeConsumo({ origen: 'cli', motivo: 'sin-respuesta', fetchedAtMs: Date.now() - 86400_000 })
+    ).toBe('caché del CLI, de ayer · sin respuesta de la API (red o demora)');
+  });
+
+  it('sin fecha no se inventa una', () => {
+    expect(procedenciaDeConsumo({ origen: 'cli', motivo: '', fetchedAtMs: 0 })).toBe('caché del CLI');
+  });
+
+  it('un motivo que la interfaz no conoce se muestra igual, no desaparece', () => {
+    expect(textoDeMotivo('motivo-nuevo')).toBe('motivo-nuevo');
   });
 });

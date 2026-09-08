@@ -1,9 +1,16 @@
 // electron/usage.test.ts
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect } from 'vitest';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cacheDeLaCuenta, readUsage, vigentes } from './usage';
+import { guardarUltimoBueno, storeDeConsumo } from './usage-store';
+
+/** El almacén del último dato bueno vive en LOCALAPPDATA. Se lo manda a un
+ *  temporal para que los tests no lean ni escriban el de la máquina real. */
+beforeEach(async () => {
+  process.env.LOCALAPPDATA = await mkdtemp(join(tmpdir(), 'usage-local-'));
+});
 
 /** Fechas relativas a hoy: un límite se muestra sólo mientras su ventana no se
  *  haya restablecido, así que fijarlas en el calendario haría fallar el test
@@ -58,7 +65,8 @@ describe('readUsage', () => {
     expect(usage?.plan).toBe('claude_pro');
     // Sin .credentials.json no hay consulta en vivo posible: cae a la caché y
     // lo dice, en vez de presentar números viejos como actuales.
-    expect(usage?.live).toBe(false);
+    expect(usage?.origen).toBe('cli');
+    expect(usage?.motivo).toBe('sin-credenciales');
     expect(usage?.accountName).toBe('');
     expect(usage?.fetchedAtMs).toBe(1786729194161);
     expect(usage?.limits).toEqual([
@@ -97,5 +105,46 @@ describe('readUsage', () => {
   it('devuelve null cuando la cuenta nunca se usó', async () => {
     expect(await readUsage(await mkdtemp(join(tmpdir(), 'usage-')))).toBeNull();
     expect(await readUsage(await configDirWith({ firstStartTime: '2026-08-14T17:16:56.477Z' }))).toBeNull();
+  });
+});
+
+
+describe('readUsage: el último dato bueno antes que la caché del CLI', () => {
+  const guardado = [
+    { kind: 'session', label: 'Sesión (5 h)', percent: 25, severity: 'normal', resetsAt: enHoras(3) }
+  ];
+
+  it('con la consulta en vivo caída, muestra lo último que contestó la API y no la caché del CLI', async () => {
+    // Este es el bug que se arregló: antes, cualquier tropiezo —un timeout de
+    // 6 s en una máquina cargada alcanzaba— caía directo a la caché del CLI,
+    // que en la práctica está días atrasada, así que `vigentes()` la descartaba
+    // entera y las barras desaparecían de una cuenta que estaba perfecta.
+    const dir = await configDirWith(CONFIG);
+    await guardarUltimoBueno(storeDeConsumo(), dir, { limits: guardado, email: 'yo@ejemplo.com', accountName: 'Yo' }, 5000);
+
+    const usage = await readUsage(dir);
+    expect(usage?.origen).toBe('guardado');
+    expect(usage?.limits).toEqual(guardado);
+    expect(usage?.fetchedAtMs).toBe(5000);
+    // Y sigue diciendo por qué no es de ahora, que es la otra mitad del arreglo.
+    expect(usage?.motivo).toBe('sin-credenciales');
+  });
+
+  it('lo guardado también vence: un porcentaje de una ventana ya restablecida no se muestra', async () => {
+    const vencido = [{ ...guardado[0], resetsAt: enHoras(-1) }];
+    const dir = await configDirWith(CONFIG);
+    await guardarUltimoBueno(storeDeConsumo(), dir, { limits: vencido, email: '', accountName: '' }, 5000);
+
+    // Cae al escalón siguiente, la caché del CLI, en vez de mostrar un número
+    // que dejó de describir nada.
+    expect((await readUsage(dir))?.origen).toBe('cli');
+  });
+
+  it('el nombre de la cuenta sobrevive a la caída: se conserva el que trajo la API', async () => {
+    const dir = await configDirWith(CONFIG);
+    await guardarUltimoBueno(storeDeConsumo(), dir, { limits: guardado, email: 'api@ejemplo.com', accountName: 'Yo' }, 5000);
+    const usage = await readUsage(dir);
+    expect(usage?.accountName).toBe('Yo');
+    expect(usage?.email).toBe('api@ejemplo.com');
   });
 });

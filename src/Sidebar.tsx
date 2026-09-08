@@ -5,17 +5,19 @@ import {
   estadoDeSesion,
   hablarDeChrome,
   motivoDeshabilitado,
+  procedenciaDeConsumo,
   projectName,
   relativeDate,
-  seLeMiroElDisco
+  seLeMiroElDisco,
+  textoDeMotivo
 } from './format';
 
 const FULL_DATE = new Intl.DateTimeFormat('es', { dateStyle: 'medium', timeStyle: 'short' });
 
 /** Estado de consumo de una cuenta: una barra por límite, con cuándo se
- *  restablece. Los números salen de la caché que deja el propio CLI, así que
- *  se muestra su antigüedad: si la cuenta hace días que no se usa, están
- *  viejos y decirlo evita que se lean como actuales. */
+ *  restablece. Los números pueden venir de la API en vivo, del último dato que
+ *  contestó, o de la caché del CLI, y el pie siempre dice de cuál de los tres y
+ *  por qué: si están viejos, decirlo evita que se lean como actuales. */
 function Usage({ usage }: { usage: AccountUsage | null }) {
   if (!usage) return null;
   // Sin límites que mostrar queda el nombre de la cuenta, que es la mitad del
@@ -30,8 +32,12 @@ function Usage({ usage }: { usage: AccountUsage | null }) {
             {usage.plan && <span className="muted"> · {usage.plan.replace('claude_', '')}</span>}
           </p>
         )}
+        {/* El motivo es lo que faltaba: sin él, esta tarjeta decía "usá la
+            cuenta" incluso cuando lo único que pasaba era que la API no había
+            contestado a tiempo, y usar la cuenta no arreglaba nada. */}
         <p className="muted">
-          Sin datos de consumo al día. Usá la cuenta una vez —terminal o Desktop— y vuelven.
+          Sin datos de consumo al día
+          {usage.motivo ? `: ${textoDeMotivo(usage.motivo)}.` : '. Usá la cuenta una vez —terminal o Desktop— y vuelven.'}
         </p>
       </div>
     );
@@ -40,7 +46,7 @@ function Usage({ usage }: { usage: AccountUsage | null }) {
   // única diferencia estaba en una línea gris al final. Atenuado, la barra
   // misma avisa que no es de ahora.
   return (
-    <div className={`usage${usage.live ? '' : ' cacheada'}`}>
+    <div className={`usage${usage.origen === 'vivo' ? '' : ' cacheada'}`}>
       {usage.email && (
         <p className="usage-account" title={usage.accountName ? `${usage.accountName} · ${usage.email}` : usage.email}>
           {usage.accountName ? `${usage.accountName} — ` : ''}
@@ -64,9 +70,7 @@ function Usage({ usage }: { usage: AccountUsage | null }) {
           )}
         </div>
       ))}
-      <p className="muted">
-        {usage.live ? 'en vivo' : usage.fetchedAtMs > 0 ? `caché del CLI, de ${relativeDate(usage.fetchedAtMs)}` : 'caché del CLI'}
-      </p>
+      <p className="muted">{procedenciaDeConsumo(usage)}</p>
     </div>
   );
 }

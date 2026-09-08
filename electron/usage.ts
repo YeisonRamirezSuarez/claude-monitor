@@ -2,6 +2,8 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AccountUsage, UsageLimit } from '../shared/types';
 import { canCallApi } from './credentials';
+import { anotar } from './registro';
+import { guardarUltimoBueno, leerUltimoBueno, storeDeConsumo } from './usage-store';
 
 /** Los mismos endpoints que usa el CLI: consumo y dueño del token. */
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
@@ -53,6 +55,28 @@ async function readJson(path: string): Promise<Record<string, unknown> | null> {
 }
 
 /**
+ * El porqué de una consulta en vivo que no salió.
+ *
+ * Antes esto era un `null` pelado y la falla era invisible: el panel mostraba
+ * números viejos —o ninguno— sin decir por qué, y en el registro de la app no
+ * quedaba nada. Se revisó un `panel.log` de 24 kB y no tenía UNA sola línea
+ * sobre el consumo. Sin el motivo no hay forma de distinguir "el token venció"
+ * de "no hay red", que se arreglan de maneras distintas.
+ */
+export type MotivoFalla =
+  | 'sin-credenciales'
+  | 'token-vencido'
+  | 'sin-limites'
+  | 'api-rechazo'
+  | 'sin-respuesta';
+
+// El texto que ve el usuario para cada motivo vive en `src/format.ts`: acá el
+// motivo viaja como código, que es lo que sirve para el registro y para que la
+// interfaz decida cómo decirlo.
+
+type Consulta = { live: Live | null; motivo: MotivoFalla | null };
+
+/**
  * Consulta el consumo real de la cuenta.
  *
  * Usa el token OAuth que el CLI ya dejó en `<configDir>/.credentials.json`,
@@ -61,20 +85,21 @@ async function readJson(path: string): Promise<Record<string, unknown> | null> {
  * el header a api.anthropic.com —el mismo destino al que lo manda el CLI— y no
  * se guarda ni se registra en ningún lado.
  *
- * Devuelve null ante cualquier problema: sin credenciales, token vencido, sin
- * red o respuesta rara. El llamador cae a la caché.
+ * Cuando sale bien se anota en disco, para que el próximo tropiezo no borre
+ * los números. Ver `usage-store.ts`.
  */
-async function fetchLive(configDir: string): Promise<Live | null> {
+async function fetchLive(configDir: string): Promise<Consulta> {
   const cached = liveCache.get(configDir);
-  if (cached && Date.now() - cached.at < LIVE_TTL_MS) return cached;
+  if (cached && Date.now() - cached.at < LIVE_TTL_MS) return { live: cached, motivo: null };
 
   const credentials = await readJson(join(configDir, '.credentials.json'));
+  const token = (credentials?.claudeAiOauth as { accessToken?: unknown } | undefined)?.accessToken;
+  if (typeof token !== 'string' || !token) return { live: null, motivo: 'sin-credenciales' };
   // Un token de acceso vencido devuelve 401. La cuenta sigue logueada —el CLI
   // lo renueva solo, ver `credentials.ts`— pero hasta que eso pase el consumo
-  // sale de la caché. Se chequea antes para no gastar un timeout por cuenta en
-  // cada refresco pidiendo algo que ya se sabe que va a fallar.
-  if (!canCallApi(credentials)) return null;
-  const token = (credentials?.claudeAiOauth as { accessToken?: unknown } | undefined)?.accessToken as string;
+  // sale de lo guardado. Se chequea antes para no gastar un timeout por cuenta
+  // en cada refresco pidiendo algo que ya se sabe que va a fallar.
+  if (!canCallApi(credentials)) return { live: null, motivo: 'token-vencido' };
 
   const get = async (url: string) => {
     const res = await fetch(url, {
@@ -86,8 +111,12 @@ async function fetchLive(configDir: string): Promise<Live | null> {
 
   try {
     const [usage, profile] = await Promise.all([get(USAGE_URL), get(PROFILE_URL)]);
+    // `usage` en null es la API contestando algo que no es 2xx; sin límites en
+    // una respuesta buena es otra cosa, y se distinguen porque se arreglan
+    // distinto.
+    if (usage === null) return { live: null, motivo: 'api-rechazo' };
     const limits = toLimits(usage);
-    if (!limits.length) return null;
+    if (!limits.length) return { live: null, motivo: 'sin-limites' };
     // La cuenta se resuelve preguntando de quién es el token, no leyendo el
     // `.claude.json`: ese archivo guarda la última cuenta que el CLI escribió
     // ahí y queda desactualizado si otro login pisó las credenciales. Cuando
@@ -99,10 +128,23 @@ async function fetchLive(configDir: string): Promise<Live | null> {
       accountName: typeof account?.display_name === 'string' ? account.display_name : ''
     };
     liveCache.set(configDir, { ...live, at: Date.now() });
-    return live;
+    await guardarUltimoBueno(storeDeConsumo(), configDir, live);
+    return { live, motivo: null };
   } catch {
-    return null; // sin red, timeout, o respuesta ilegible
+    return { live: null, motivo: 'sin-respuesta' }; // sin red, timeout, o respuesta ilegible
   }
+}
+
+/** El último motivo anotado por cuenta, para no repetir la misma línea en cada
+ *  refresco: el panel se refresca al volver el foco a la ventana, y un registro
+ *  con mil líneas iguales no se lee. */
+const ultimoMotivo = new Map<string, MotivoFalla | null>();
+
+function anotarSiCambio(configDir: string, motivo: MotivoFalla | null): void {
+  if (ultimoMotivo.get(configDir) === motivo) return;
+  ultimoMotivo.set(configDir, motivo);
+  if (motivo) anotar('consumo: no se pudo consultar en vivo', { configDir, motivo });
+  else anotar('consumo: en vivo de nuevo', { configDir });
 }
 
 /**
@@ -142,9 +184,19 @@ export function vigentes(limits: UsageLimit[], now = Date.now()): UsageLimit[] {
 }
 
 /**
- * Consumo de una cuenta: en vivo si se puede, con la caché del CLI como
- * respaldo. `live` distingue las dos, porque un número viejo presentado como
- * actual es peor que no mostrarlo.
+ * Consumo de una cuenta, por orden de confianza: en vivo, lo último que la API
+ * contestó, y recién ahí la caché del CLI.
+ *
+ * El escalón del medio es nuevo y es el que arregla el bug que se veía: sin él,
+ * cualquier tropiezo de la consulta en vivo caía directo a la caché del CLI, y
+ * esa caché en la práctica está muerta —se midieron 5, 13 y 25 días de atraso
+ * en las cuentas de esta máquina, y una sin caché—, así que `vigentes()` la
+ * descartaba entera y las barras desaparecían. Un timeout de 6 s en una máquina
+ * cargada alcanzaba para vaciar el panel de una cuenta que estaba perfecta.
+ *
+ * `origen` dice de dónde salió cada número y `motivo` por qué no se pudo mejor:
+ * un número viejo presentado como actual es peor que no mostrarlo, y un panel
+ * vacío sin explicación es peor que las dos cosas.
  */
 export async function readUsage(configDir: string): Promise<AccountUsage | null> {
   const config = await readJson(join(configDir, '.claude.json'));
@@ -153,19 +205,38 @@ export async function readUsage(configDir: string): Promise<AccountUsage | null>
 
   const plan = typeof account?.organizationType === 'string' ? account.organizationType : '';
 
-  const live = await fetchLive(configDir);
-  // La caché sólo entra si es de esta cuenta y si lo que dice sigue en pie.
+  const { live, motivo } = await fetchLive(configDir);
+  anotarSiCambio(configDir, motivo);
+
+  // Lo guardado sólo se lee cuando hace falta, y pasa por `vigentes` igual que
+  // la caché del CLI: guardado o no, un porcentaje de una ventana que ya se
+  // restableció dejó de describir nada.
+  const guardado = live ? null : await leerUltimoBueno(storeDeConsumo(), configDir);
+  const delGuardado = vigentes(guardado?.limits ?? []);
+  // La caché del CLI sólo entra si es de esta cuenta y si lo que dice sigue en pie.
   const deRespaldo = cacheDeLaCuenta(account, cached) ? vigentes(toLimits(cached?.utilization)) : [];
-  const limits = live ? live.limits : deRespaldo;
-  const email = live?.email || (typeof account?.emailAddress === 'string' ? account.emailAddress : '');
-  if (!limits.length && !email) return null;
+
+  const elegido = live
+    ? { limits: live.limits, origen: 'vivo' as const, fetchedAtMs: Date.now() }
+    : delGuardado.length
+      ? { limits: delGuardado, origen: 'guardado' as const, fetchedAtMs: guardado?.savedAt ?? 0 }
+      : {
+          limits: deRespaldo,
+          origen: 'cli' as const,
+          fetchedAtMs: typeof cached?.fetchedAtMs === 'number' ? cached.fetchedAtMs : 0
+        };
+
+  const email =
+    live?.email || guardado?.email || (typeof account?.emailAddress === 'string' ? account.emailAddress : '');
+  if (!elegido.limits.length && !email) return null;
 
   return {
     email,
-    accountName: live?.accountName ?? '',
+    accountName: live?.accountName || guardado?.accountName || '',
     plan,
-    live: live !== null,
-    fetchedAtMs: live ? Date.now() : typeof cached?.fetchedAtMs === 'number' ? cached.fetchedAtMs : 0,
-    limits
+    origen: elegido.origen,
+    motivo: motivo ?? '',
+    fetchedAtMs: elegido.fetchedAtMs,
+    limits: elegido.limits
   };
 }
