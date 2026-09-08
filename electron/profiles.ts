@@ -279,8 +279,14 @@ export async function createProfile(name: string): Promise<Profile> {
  * distro, pero puede hacerse sin apagarla; el peor caso es entonces que el
  * panel siga diciendo `sin-cli` hasta que la distro se apague (WSL lo hace solo
  * por inactividad) o hasta el próximo arranque del panel. Es un estado que se
- * recupera solo, no un dato que se pierda — y el error va en la dirección
- * segura: nunca afirma que hay CLI donde no lo hay.
+ * recupera solo, no un dato que se pierda.
+ *
+ * La caché puede quedar vieja en las dos direcciones, no en una sola: si
+ * alguien DESinstala `claude` sin apagar la distro, sigue diciendo que hay CLI
+ * hasta el próximo apagado. Eso no habilita nada peligroso porque este dato
+ * alimenta un cartel informativo (`sin-cli`) y ninguna compuerta: reanudar y
+ * crear no lo consultan, y si el CLI no está, el que falla y lo dice es el
+ * `claude` de adentro de la distro.
  *
  * El alta de una cuenta (`createWslProfile`) NO pasa por acá a propósito: ahí
  * el usuario acaba de instalar el CLI y espera que se lo vea al instante.
