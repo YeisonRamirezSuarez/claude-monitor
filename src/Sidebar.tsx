@@ -286,7 +286,14 @@ function ProfileBlock({
             extensión se autentica con la cuenta, así que primero el login. Con
             los dos botones a la vez, el de Chrome sólo invita a un camino que
             todavía no lleva a ningún lado. */}
-        {profile.authenticated && (
+        {/* Y tampoco para una cuenta WSL, por el mismo motivo que los párrafos
+            de abajo: la etiqueta de este botón ES una afirmación sobre la
+            extensión —"Chrome !", "Falta: instalar la extensión y iniciar
+            sesión en claude.ai"— y ahí no puede dejar de ser falsa nunca,
+            porque `chrome.extension` y `chrome.loggedIn` no van a ser true en
+            una distro. Dejarlo mientras se bifurca la prosa dejaba la
+            contradicción a la vista en la misma tarjeta. */}
+        {conChrome && profile.authenticated && (
           <button
             className={`link${listo ? '' : ' pendiente'}${profile.chrome.verified ? '' : ' incierto'}`}
             title={chrome.title}
