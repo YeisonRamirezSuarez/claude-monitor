@@ -370,6 +370,24 @@ select:focus {
   flex: none;
 }
 
+/* El alta de WSL tiene cuatro controles —nombre, distro, Agregar, Cancelar— y
+   en el ancho de la barra no entran en una línea: el nombre, que es el único
+   que crece, quedaba aplastado a unos pocos píxeles. Así el nombre ocupa su
+   propia línea y la distro con los botones van abajo. */
+.add-wsl {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.add-wsl input {
+  flex-basis: 100%;
+}
+
+.add-wsl select {
+  flex: 1;
+  min-width: 0;
+}
+
 .add-account button[type="submit"] {
   border: 1px solid var(--line);
 }

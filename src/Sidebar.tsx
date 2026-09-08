@@ -486,7 +486,7 @@ export default function Sidebar(props: Props) {
         </button>
       ) : (
         <form
-          className="add-account"
+          className="add-account add-wsl"
           onSubmit={(e) => {
             e.preventDefault();
             if (!wslName.trim() || !wslDistro) return;
