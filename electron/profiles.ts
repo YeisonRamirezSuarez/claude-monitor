@@ -71,6 +71,22 @@ async function authState(configDir: string): Promise<{ authenticated: boolean; e
   }
 }
 
+/**
+ * La sesión está muerta aunque el archivo diga que no.
+ *
+ * `authState` sólo sabe leer `.credentials.json`, y ese archivo NO cambia
+ * cuando la sesión se cae del lado del servidor: cerrar sesión desde claude.ai,
+ * revocar el dispositivo o cambiar la contraseña dejan el token de renovación
+ * escrito ahí, con su vencimiento a un mes, y la cuenta se veía verde para
+ * siempre — sin punto rojo y sin "Configurar Claude"—. El usuario se enteraba
+ * recién al abrir la terminal.
+ *
+ * El 401 de la API es lo único que lo desmiente, y sólo cuenta cuando el token
+ * de acceso todavía no venció (`usage.ts` no consulta si venció, justamente
+ * para no confundir "hay que renovar" con "te echaron").
+ */
+const sesionRechazada = (usage: { motivo?: string } | null): boolean => usage?.motivo === 'sesion-rechazada';
+
 async function exists(path: string): Promise<boolean> {
   try {
     await stat(path);
@@ -121,13 +137,16 @@ export async function listProfiles(): Promise<{ activeProfileId: string; profile
       const chrome = await chromeStatus(p.id, p.name);
       if (!sePuedeLeer(p.entorno, corriendo)) return { ...sinMirar(p), chrome };
       const auth = await authState(p.configDir);
+      const usage = await readUsage(p.configDir);
+      // La API le gana al archivo: ver `sesionRechazada`.
+      const viva = auth.authenticated && !sesionRechazada(usage);
       return {
         ...p,
         exists: await exists(p.configDir),
-        authenticated: auth.authenticated,
-        authExpiresAt: auth.expiresAt,
+        authenticated: viva,
+        authExpiresAt: viva ? auth.expiresAt : null,
         chrome,
-        usage: await readUsage(p.configDir)
+        usage
       };
     })
   );
@@ -180,12 +199,18 @@ export async function profileForWork(): Promise<{ profile: Profile; relevo: stri
   const candidatos = await Promise.all(
     visibles.map(async (p) =>
       sePuedeLeer(p.entorno, corriendo)
-        ? {
-            id: p.id,
-            name: p.name,
-            authenticated: (await authState(p.configDir)).authenticated,
-            usage: await readUsage(p.configDir)
-          }
+        ? await (async () => {
+            const usage = await readUsage(p.configDir);
+            return {
+              id: p.id,
+              name: p.name,
+              // Mismo criterio que en `listProfiles`: una cuenta a la que la API
+              // le rechazó el token no sirve para mandarle trabajo, por más cupo
+              // que diga tener.
+              authenticated: (await authState(p.configDir)).authenticated && !sesionRechazada(usage),
+              usage
+            };
+          })()
         : { id: p.id, name: p.name, authenticated: false, usage: null }
     )
   );
@@ -259,7 +284,8 @@ export async function createProfile(name: string): Promise<Profile> {
 
 /**
  * Todas las raíces que hay que leer: el pozo de Windows más una por cada
- * cuenta WSL.
+ * DISTRO con cuenta dada de alta (el pozo de esa distro, compartido por todas
+ * sus cuentas).
  *
  * La compuerta es `wsl -l -q --running` y NO es una optimización: tocar la UNC
  * de una distro apagada la enciende (medido: True en 1,90 s, la distro queda

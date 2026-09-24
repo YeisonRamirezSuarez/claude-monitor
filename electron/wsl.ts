@@ -278,13 +278,30 @@ export const potDe = (home: string): string => `${home}/.claude`;
  * `raices()` lee el POZO de la distro y no el `projects` de cada cuenta: por el
  * enlace no vería nada.
  *
- * `mkdir -p` y el `ln -s` condicional lo hacen repetible sin efectos: volver a
- * correrlo sobre una cuenta que ya existe no pisa nada.
+ * También deja la marca de presentación (`hasCompletedOnboarding`) en un
+ * `.claude.json` mínimo, si no hay uno: es lo mismo que `markOnboardingDone`
+ * hace en Windows, y acá va en el mismo script porque esa función se niega a
+ * escribir por la UNC de una distro. Sin la marca, el primer `claude` de la
+ * cuenta pide elegir método de ingreso aunque el token ya esté, y elegir ahí
+ * lanza otro login en el navegador por defecto. El CLI agrega lo suyo a ese
+ * archivo después (la cuenta del login, los avisos vistos).
+ *
+ * `mkdir -p`, el `ln -s` condicional y el `.claude.json` condicional lo hacen
+ * repetible sin efectos: volver a correrlo sobre una cuenta que ya existe no
+ * pisa nada.
  */
-export async function prepararCuentaEnDistro(distro: string, home: string, id: string): Promise<void> {
+export function scriptDePreparacion(home: string, id: string): string {
   const dir = shQuote(configDirDeCuenta(home, id));
   const pozo = shQuote(`${potDe(home)}/projects`);
-  const script = `mkdir -p ${dir} && mkdir -p ${pozo} && [ -e ${dir}/projects ] || ln -s ${pozo} ${dir}/projects`;
+  return [
+    `mkdir -p ${dir} && mkdir -p ${pozo}`,
+    `{ [ -e ${dir}/projects ] || ln -s ${pozo} ${dir}/projects; }`,
+    `{ [ -e ${dir}/.claude.json ] || printf '{"hasCompletedOnboarding":true}\\n' > ${dir}/.claude.json; }`
+  ].join(' && ');
+}
+
+export async function prepararCuentaEnDistro(distro: string, home: string, id: string): Promise<void> {
+  const script = scriptDePreparacion(home, id);
   await run('wsl.exe', ['-d', distro, '--exec', 'bash', '-lc', script], {
     encoding: 'buffer',
     timeout: TIMEOUT_WSL,

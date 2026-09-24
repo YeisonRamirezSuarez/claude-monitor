@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { shQuote } from './terminal';
 import {
   TIMEOUT_WSL,
   argsDeConsulta,
@@ -12,6 +13,7 @@ import {
   estadoDeRaiz,
   posixAWindows,
   potDe,
+  scriptDePreparacion,
   sePuedeLeer,
   windowsAPosix
 } from './wsl';
@@ -366,6 +368,20 @@ describe('carpetas por cuenta adentro de la distro', () => {
 
   it('el pozo de la distro sigue siendo su ~/.claude: es la única raíz que se lee', () => {
     expect(potDe('/home/pablo')).toBe('/home/pablo/.claude');
+  });
+
+  it('el script crea la carpeta, enlaza projects al pozo y deja la marca de presentación', () => {
+    const script = scriptDePreparacion('/home/pablo', 'aaa11111');
+    expect(script).toContain("mkdir -p '/home/pablo/.claude-monitor/aaa11111'");
+    expect(script).toContain("ln -s '/home/pablo/.claude/projects' '/home/pablo/.claude-monitor/aaa11111'/projects");
+    expect(script).toContain('{"hasCompletedOnboarding":true}');
+    // Repetible: cada paso que crea algo va detrás de un `[ -e … ] ||`.
+    expect(script).toContain("[ -e '/home/pablo/.claude-monitor/aaa11111'/projects ] ||");
+    expect(script).toContain("[ -e '/home/pablo/.claude-monitor/aaa11111'/.claude.json ] ||");
+  });
+
+  it('el script comilla el home: un apóstrofo no rompe el shell', () => {
+    expect(scriptDePreparacion("/home/o'brien", 'aaa11111')).toContain(shQuote("/home/o'brien/.claude-monitor/aaa11111"));
   });
 
   // La ida y vuelta importa: el configDir se guarda en UNC (lo leen

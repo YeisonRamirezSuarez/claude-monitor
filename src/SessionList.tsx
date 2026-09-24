@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Raiz, SessionMeta, SessionTokens } from '../shared/types';
 import {
+  agruparLinajes,
   etiquetaDeEntorno,
   formatExact,
   formatSize,
@@ -8,6 +9,7 @@ import {
   motivoDeshabilitado,
   projectName,
   raicesMudas,
+  raizUNC,
   relativeDate
 } from './format';
 
@@ -144,8 +146,13 @@ type Props = {
   onResumeInDesktop: (id: string) => void;
   onDelete: (id: string) => void;
   onOpen: (id: string) => void;
-  onNewSession: () => void;
-  onNewSessionInDesktop: () => void;
+  /** Las distros de WSL instaladas en la maquina, haya o no una cuenta dada de
+   *  alta ahi. Con al menos una aparece el selector de donde abrir la carpeta;
+   *  sin ninguna no hay nada que elegir y no se dibuja nada. */
+  distros: string[];
+  /** `desde` es donde ABRE el selector de carpeta, no la carpeta elegida. */
+  onNewSession: (desde?: string) => void;
+  onNewSessionInDesktop: (desde?: string) => void;
 };
 
 export default function SessionList({
@@ -161,17 +168,44 @@ export default function SessionList({
   onResumeInDesktop,
   onDelete,
   onOpen,
+  distros,
   onNewSession,
   onNewSessionInDesktop
 }: Props) {
   const [query, setQuery] = useState('');
+  // Donde abre el selector de carpeta. Cadena vacia = como siempre, que el
+  // sistema decida. Es una sola eleccion para los dos botones: el usuario
+  // elige DONDE esta la carpeta, no con que herramienta trabajarla.
+  const [desde, setDesde] = useState('');
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  // Los linajes desplegados: por defecto una conversación bifurcada muestra
+  // una sola tarjeta (la copia más reciente) y las otras quedan plegadas.
+  const [desplegados, setDesplegados] = useState<Set<string>>(new Set());
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return sessions;
     return sessions.filter((s) => s.preview.toLowerCase().includes(q) || s.cwd.toLowerCase().includes(q));
   }, [sessions, query]);
+
+  // Una fila por tarjeta. Las copias de una misma conversación (ver
+  // `agruparLinajes`) van detrás de su principal y sólo si el linaje está
+  // desplegado: así "se me duplicó la sesión" deja de pasar sin esconder nada.
+  const filas = useMemo(
+    () =>
+      agruparLinajes(filtered).flatMap(({ clave, principal, otras }) => [
+        { s: principal, clave, plegadas: otras.length, bifurcacion: false },
+        ...(desplegados.has(clave) ? otras.map((s) => ({ s, clave, plegadas: 0, bifurcacion: true })) : [])
+      ]),
+    [filtered, desplegados]
+  );
+
+  const alternar = (clave: string) =>
+    setDesplegados((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(clave)) next.add(clave);
+      return next;
+    });
 
   // Si la sesión con confirmación abierta desaparece de la lista (búsqueda,
   // cambio de proyecto, refresco), se cierra. Sin esto el flag sobrevive
@@ -189,18 +223,36 @@ export default function SessionList({
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Buscar por texto o ruta…"
         />
+        {/* Donde esta la carpeta. Aparece solo si hay una distro instalada.
+
+            Es lo que faltaba para trabajar en Ubuntu sin dar de alta nada: una
+            carpeta de la distro es una ruta de Windows como cualquier otra por
+            su UNC, y el `claude` de Windows corre ahi —medido: el transcript
+            queda en el pozo de Windows con el `cwd` ya en UNC, asi que Desktop
+            despues la reanuda sin nada especial—. Lo unico que faltaba era
+            llegar, porque esa UNC nadie la escribe de memoria. */}
+        {distros.length > 0 && (
+          <select
+            className="donde"
+            value={desde}
+            onChange={(e) => setDesde(e.target.value)}
+            title="Donde buscar la carpeta del proyecto"
+          >
+            <option value="">Carpeta de Windows</option>
+            {distros.map((d) => (
+              <option key={d} value={raizUNC(d)}>
+                Carpeta de {d}
+              </option>
+            ))}
+          </select>
+        )}
         {/* Los dos lugares donde se puede trabajar, uno al lado del otro: la
             terminal y Desktop. Antes había un solo botón y la elección no
             existía. */}
-        {/* Crear en terminal con una cuenta WSL usa el lanzador (Task 14): ya
-            no se deshabilita. Crear en Desktop sigue deshabilitado con
-            motivo: Desktop no puede hospedar una sesión de la distro (§7). */}
-        <button className="primary" onClick={onNewSession}>
+        <button className="primary" onClick={() => onNewSession(desde || undefined)}>
           Nueva en terminal…
         </button>
-        {/* Ya no se deshabilita para WSL: `desktop:openIn` traduce la carpeta
-            de la distro a UNC antes de dársela a Desktop, que sabe abrirla. */}
-        <button onClick={onNewSessionInDesktop}>Nueva en Desktop…</button>
+        <button onClick={() => onNewSessionInDesktop(desde || undefined)}>Nueva en Desktop…</button>
       </div>
 
       {/* Antes que la lista, no después: lo que hay que entender es que lo de
@@ -223,10 +275,10 @@ export default function SessionList({
         <p className="muted">{sessions.length === 0 ? emptyHint : 'Ninguna sesión coincide con la búsqueda.'}</p>
       )}
 
-      {filtered.map((s) => {
+      {filas.map(({ s, clave, plegadas, bifurcacion }) => {
         const t = tokens[s.id] ?? SIN_CONSUMO;
         return (
-        <article key={s.id} className="card">
+        <article key={`${s.projectSlug}/${s.id}`} className={bifurcacion ? 'card bifurcacion' : 'card'}>
           <p className="preview">{s.preview || <em className="muted">(sin mensajes)</em>}</p>
           <p className="meta">
             <span title={s.cwd}>{s.cwd}</span>
@@ -235,6 +287,31 @@ export default function SessionList({
             {etiquetaDeEntorno(s.entorno) && (
               <span className="chip-entorno" title={`Sesión de ${etiquetaDeEntorno(s.entorno)}`}>
                 {etiquetaDeEntorno(s.entorno)}
+              </span>
+            )}
+            {/* Las otras copias de esta misma conversación. Se dice cuántas
+                hay y se pueden abrir: no se esconden, porque una bifurcación
+                puede haber seguido su propio camino. */}
+            {plegadas > 0 && (
+              <button
+                type="button"
+                className="chip-linaje"
+                title={
+                  `Esta conversación tiene ${plegadas} ${plegadas === 1 ? 'copia' : 'copias'} más en disco: al bifurcarla ` +
+                  '(--fork-session, o el "rebobinar" de Claude Desktop) Claude Code la copió a otro .jsonl. ' +
+                  'Acá se muestra la que se usó más recientemente. Tocá para ver las otras.'
+                }
+                onClick={() => alternar(clave)}
+              >
+                {desplegados.has(clave) ? '▾' : '▸'} {plegadas} {plegadas === 1 ? 'bifurcación' : 'bifurcaciones'}
+              </button>
+            )}
+            {bifurcacion && (
+              <span
+                className="chip-linaje"
+                title="Copia de la conversación de arriba, hecha al bifurcarla. Es un archivo aparte: se puede reanudar, ver y borrar por separado."
+              >
+                bifurcación
               </span>
             )}
             {s.gitBranch && <span className="branch">{s.gitBranch}</span>}
@@ -267,15 +344,16 @@ export default function SessionList({
             {/* Sin `canResume`: eso mira el login del CLI, y el de Desktop es
                 otro —vive en su propia carpeta de datos—. Una cuenta sin el CLI
                 autorizado puede trabajar en Desktop igual. */}
-            {/* Ya no se deshabilita para WSL. Desktop sabe trabajar adentro
-                de una distro, y el handler le pasa la raíz de ESTA sesión como
-                CLAUDE_CONFIG_DIR —la UNC del `~/.claude` de la distro— en vez
-                del pozo de Windows, que era lo que hacía que no encontrara
-                nada. */}
+            {/* Deshabilitado para una sesión de la distro, con el motivo: el
+                enlace con el que Desktop importa sólo abre sesiones locales de
+                Windows. Ver `motivoDeshabilitado`; la frontera de verdad es el
+                handler `desktop:resume`, esto es la presentación. */}
             <button
+              disabled={s.entorno.tipo === 'wsl'}
               title={
+                motivoDeshabilitado(s.entorno, 'desktop') ||
                 `Seguir esta misma conversación en el Claude Desktop de "${activeProfileName}". ` +
-                'Desktop adopta el transcript y abre el historial entero.'
+                  'Desktop adopta el transcript y abre el historial entero.'
               }
               onClick={() => onResumeInDesktop(s.id)}
             >

@@ -66,6 +66,7 @@ async function readJson(path: string): Promise<Record<string, unknown> | null> {
 export type MotivoFalla =
   | 'sin-credenciales'
   | 'token-vencido'
+  | 'sesion-rechazada'
   | 'sin-limites'
   | 'api-rechazo'
   | 'sin-respuesta';
@@ -101,16 +102,26 @@ async function fetchLive(configDir: string): Promise<Consulta> {
   // en cada refresco pidiendo algo que ya se sabe que va a fallar.
   if (!canCallApi(credentials)) return { live: null, motivo: 'token-vencido' };
 
+  // Un 401 con un token de acceso que TODAVÍA no venció no es un tropiezo de
+  // la consulta: es el servidor diciendo que esa sesión ya no vale —alguien
+  // cerró sesión desde claude.ai, se revocó el dispositivo, cambió la
+  // contraseña—. El archivo de credenciales no se entera nunca (sigue con su
+  // `refreshTokenExpiresAt` a un mes vista), así que este 401 es lo ÚNICO que
+  // desmiente a la cuenta que se ve verde. Ver `authState` en `profiles.ts`.
+  let rechazada = false;
+
   const get = async (url: string) => {
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20' },
       signal: AbortSignal.timeout(TIMEOUT_MS)
     });
+    if (res.status === 401 || res.status === 403) rechazada = true;
     return res.ok ? ((await res.json()) as Record<string, unknown>) : null;
   };
 
   try {
     const [usage, profile] = await Promise.all([get(USAGE_URL), get(PROFILE_URL)]);
+    if (rechazada) return { live: null, motivo: 'sesion-rechazada' };
     // `usage` en null es la API contestando algo que no es 2xx; sin límites en
     // una respuesta buena es otra cosa, y se distinguen porque se arreglan
     // distinto.

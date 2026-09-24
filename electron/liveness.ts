@@ -142,33 +142,51 @@ async function procesoVivo(pid: number, entorno: Entorno): Promise<boolean> {
 /**
  * Quién tiene abierta esta conversación, si es que alguien.
  *
- * Lee el mismo `sessions/` que mira Desktop, del `configDir` de la raíz donde
- * vive el transcript. Nunca lanza: no poder mirar el registro no puede impedir
- * abrir Desktop, que en el peor caso se negará él y ahí sí no se sabrá por qué.
+ * Mira el `sessions/` de VARIAS carpetas, no de una: el registro vive en
+ * `<CLAUDE_CONFIG_DIR>/sessions`, y cada cuenta del panel es su propio
+ * CLAUDE_CONFIG_DIR. Comparten el `projects/` —el transcript es uno solo—
+ * pero cada una anota sus sesiones vivas en SU carpeta. Medido en esta
+ * máquina: `~/.claude/sessions` sin ningún `<pid>.json`, y seis vivos en el
+ * `sessions` de la cuenta con la que se estaba trabajando. Mirando sólo la
+ * raíz, una conversación abierta en la terminal de cualquier cuenta que no
+ * sea la principal parecía libre, Desktop la adoptaba y la reescribía mientras
+ * el CLI la seguía escribiendo. Por eso el llamador pasa la raíz Y las
+ * carpetas de todas las cuentas que la comparten (ver `registrosDe` en
+ * main.ts).
+ *
+ * Esto es también lo que ni el CLI ni Desktop pueden hacer solos: cada uno
+ * mira únicamente su propio `sessions/`, así que el guard de "running in
+ * another terminal" del CLI no ve a Desktop, ni Desktop a una terminal de
+ * otra cuenta. El panel es el único que conoce todas las carpetas.
+ *
+ * Nunca lanza: no poder mirar un registro no puede impedir abrir nada, que en
+ * el peor caso se negará el otro programa y ahí sí no se sabrá por qué.
  */
 export async function quienLaTiene(
-  configDir: string,
+  configDirs: string[],
   sessionId: string,
   entorno: Entorno,
   ahoraMs = Date.now()
 ): Promise<SesionViva | null> {
-  const dir = join(configDir, 'sessions');
-  const archivos = await readdir(dir).catch(() => [] as string[]);
-  for (const nombre of archivos) {
-    // El mismo filtro que Desktop: sólo `<pid>.json`. Adentro de esa carpeta
-    // también viven los `.key`, que no son entradas de sesión.
-    if (!/^\d+\.json$/.test(nombre)) continue;
-    const ruta = join(dir, nombre);
-    // Un archivo enorme no se lee entero para sacarle cuatro campos.
-    const tam = await stat(ruta).catch(() => null);
-    if (!tam || tam.size > 64 * 1024) continue;
-    const texto = await readFile(ruta, 'utf8').catch(() => null);
-    if (texto === null) continue;
-    const entrada = parseSesionViva(texto);
-    if (!entrada || entrada.sessionId !== sessionId) continue;
-    if (!lateTodavia(entrada, ahoraMs)) continue;
-    if (!(await procesoVivo(entrada.pid, entorno))) continue;
-    return entrada;
+  for (const configDir of new Set(configDirs)) {
+    const dir = join(configDir, 'sessions');
+    const archivos = await readdir(dir).catch(() => [] as string[]);
+    for (const nombre of archivos) {
+      // El mismo filtro que Desktop: sólo `<pid>.json`. Adentro de esa carpeta
+      // también viven los `.key`, que no son entradas de sesión.
+      if (!/^\d+\.json$/.test(nombre)) continue;
+      const ruta = join(dir, nombre);
+      // Un archivo enorme no se lee entero para sacarle cuatro campos.
+      const tam = await stat(ruta).catch(() => null);
+      if (!tam || tam.size > 64 * 1024) continue;
+      const texto = await readFile(ruta, 'utf8').catch(() => null);
+      if (texto === null) continue;
+      const entrada = parseSesionViva(texto);
+      if (!entrada || entrada.sessionId !== sessionId) continue;
+      if (!lateTodavia(entrada, ahoraMs)) continue;
+      if (!(await procesoVivo(entrada.pid, entorno))) continue;
+      return entrada;
+    }
   }
   return null;
 }

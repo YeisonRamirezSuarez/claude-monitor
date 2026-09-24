@@ -1,5 +1,5 @@
 // electron/usage.test.ts
-import { beforeEach, describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -146,5 +146,36 @@ describe('readUsage: el último dato bueno antes que la caché del CLI', () => {
     const usage = await readUsage(dir);
     expect(usage?.accountName).toBe('Yo');
     expect(usage?.email).toBe('api@ejemplo.com');
+  });
+});
+
+describe('readUsage: un 401 no es un tropiezo, es la sesión caída', () => {
+  /** Credenciales como las deja el CLI: token de acceso todavía vigente, así
+   *  que la consulta en vivo SÍ se intenta y lo que conteste la API vale. */
+  const credenciales = {
+    claudeAiOauth: {
+      accessToken: 'tok',
+      refreshToken: 'ref',
+      expiresAt: Date.now() + 3600_000,
+      refreshTokenExpiresAt: Date.now() + 30 * 24 * 3600_000
+    }
+  };
+
+  async function dirConSesion(): Promise<string> {
+    const dir = await configDirWith(CONFIG);
+    await writeFile(join(dir, '.credentials.json'), JSON.stringify(credenciales), 'utf8');
+    return dir;
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('lo distingue de cualquier otra falla de la API', async () => {
+    // Este es el bug: con la sesión cerrada desde claude.ai, el archivo sigue
+    // intacto y la cuenta se veía verde. El 401 es lo único que la desmiente.
+    vi.stubGlobal('fetch', async () => new Response('', { status: 401 }));
+    expect((await readUsage(await dirConSesion()))?.motivo).toBe('sesion-rechazada');
+
+    vi.stubGlobal('fetch', async () => new Response('', { status: 500 }));
+    expect((await readUsage(await dirConSesion()))?.motivo).toBe('api-rechazo');
   });
 });

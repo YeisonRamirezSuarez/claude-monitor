@@ -32,6 +32,8 @@ export function parseSessionLines(lines: Iterable<string>): ParsedSession | null
   let cwd = '';
   let gitBranch = '';
   let preview = '';
+  let primerUuid = '';
+  let primerSessionId = '';
 
   for (const line of lines) {
     if (!line.trim()) continue;
@@ -47,6 +49,19 @@ export function parseSessionLines(lines: Iterable<string>): ParsedSession | null
       if (typeof entry.gitBranch === 'string') gitBranch = entry.gitBranch;
     }
 
+    // El primer `uuid` que aparece. Una bifurcación es una COPIA del
+    // transcript del padre hasta el punto de corte, así que su primera línea
+    // con `uuid` es la misma que la del padre. El `sessionId` NO sirve de
+    // clave: el CLI lo re-estampa en las líneas copiadas (medido: 2.1.258 no,
+    // 2.1.260 sí), y las primeras líneas —`custom-title`, `queue-operation`—
+    // lo traen sin `uuid`, así que caer al `sessionId` apenas aparece daba
+    // dos linajes distintos para la misma conversación. Se cae al primer
+    // `sessionId` recién al final, y sólo si el archivo no trae ningún uuid.
+    if (!primerUuid && typeof entry.uuid === 'string' && entry.uuid) primerUuid = entry.uuid;
+    if (!primerSessionId && typeof entry.sessionId === 'string' && entry.sessionId) {
+      primerSessionId = entry.sessionId;
+    }
+
     if (!preview && entry.type === 'user') {
       const message = entry.message as { content?: unknown } | undefined;
       const text = extractText(message?.content).replace(/\s+/g, ' ').trim();
@@ -57,7 +72,7 @@ export function parseSessionLines(lines: Iterable<string>): ParsedSession | null
   }
 
   if (!cwd) return null;
-  return { cwd, gitBranch, preview };
+  return { cwd, gitBranch, preview, linaje: primerUuid || primerSessionId };
 }
 
 /** Lee el .jsonl línea a línea y corta apenas el parser tiene lo que necesita. */
@@ -121,6 +136,15 @@ export async function listSessions(configDir: string, entorno: Entorno): Promise
   const nextCache = new Map<string, FileCacheEntry>();
 
   for (const name of projectDirNames) {
+    // `ssh-<id>` es el espejo que Claude Desktop mantiene, del lado de
+    // Windows, de una conversación que corre por SSH o adentro de una distro
+    // de WSL: sincroniza byte a byte el transcript remoto (verificado en su
+    // bundle: `projects/ssh-<uuid>/<uuid>.jsonl`). La conversación de verdad
+    // vive en el otro lado —y si es de una distro con cuenta acá, ya está en
+    // la lista por su propia raíz—. Listar el espejo la mostraba dos veces, y
+    // reanudarlo desde acá abría el `claude` de Windows sobre un transcript
+    // cuya carpeta es `/home/…`.
+    if (name.startsWith('ssh-')) continue;
     const projectDir = join(projectsDir, name);
     let files: string[];
     try {

@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
-import type { AccountUsage, Entorno, ProfileList, ProfileWithStatus, Raiz, SessionMeta } from '../shared/types';
+import type { AccountUsage, ProfileList, ProfileWithStatus, Raiz, SessionMeta } from '../shared/types';
 import AccountIcon from './AccountIcon';
 import {
   estadoDeSesion,
   hablarDeChrome,
   procedenciaDeConsumo,
   projectName,
+  raizDeCuenta,
   relativeDate,
   seLeMiroElDisco,
   textoDeMotivo
@@ -94,8 +95,10 @@ type Props = {
   onLogin: (id: string) => void;
   onOpenChrome: (id: string) => void;
   onOpenDesktop: (id: string) => void;
-  onNewSessionIn: (cwd: string) => void;
-  onNewSessionInDesktop: (cwd: string) => void;
+  /** `distro` va con un `cwd` POSIX —el de una sesión de la distro— para que
+   *  el otro lado sepa a qué UNC traducirlo. Sin distro, `cwd` es de Windows. */
+  onNewSessionIn: (cwd: string, distro?: string) => void;
+  onNewSessionInDesktop: (cwd: string, distro?: string) => void;
   onDeleteProfile: (id: string) => void;
 };
 
@@ -377,10 +380,10 @@ export default function Sidebar(props: Props) {
   const [wslName, setWslName] = useState('');
   const [wslDistro, setWslDistro] = useState('');
 
-  // La raíz de lectura de una cuenta, por su `configDir`. `undefined` para una
-  // cuenta de Windows: comparten el pozo y no tienen una raíz propia que
-  // mostrar acá.
-  const raizDe = (p: ProfileWithStatus) => raices.find((r) => r.configDir === p.configDir);
+  // La raíz de lectura de una cuenta. `undefined` para una cuenta de Windows:
+  // comparten el pozo y no tienen una raíz propia que mostrar acá.
+  const raizDe = (p: ProfileWithStatus) => raizDeCuenta(raices, p.entorno);
+  const distroDe = (s: SessionMeta) => (s.entorno.tipo === 'wsl' ? s.entorno.distro : undefined);
 
   // La cuenta activa se saca de la lista de elegibles y se muestra arriba,
   // sola: es la que va a consumir los tokens, y volver a "elegirla" no hace
@@ -510,14 +513,16 @@ export default function Sidebar(props: Props) {
       {confirmDelete && (
         <div className="confirm">
           {/* Para una cuenta WSL las tres promesas del texto de siempre son
-              falsas: `sePuedeBorrarDelDisco` impide tocar su carpeta (es
-              adoptada, no la creó la app), el login sobrevive porque vive ahí
-              adentro, y sus conversaciones nunca fueron parte del pozo
-              compartido. Con el texto equivocado, quitarla da miedo de perder
-              el ~/.claude real de Linux. */}
+              falsas: `sePuedeBorrarDelDisco` impide tocar su carpeta —la creó
+              la app (~/.claude-monitor/<id>), pero adentro tiene un enlace al
+              pozo de la distro que desde Windows no se distingue de una
+              carpeta—, el login sobrevive porque vive ahí adentro, y sus
+              conversaciones nunca fueron parte del pozo compartido. Con el
+              texto equivocado, quitarla da miedo de perder el ~/.claude real
+              de Linux. */}
           <p>
             {aBorrar?.entorno?.tipo === 'wsl'
-              ? `¿Quitar la cuenta? Sólo se da de baja del panel: su ~/.claude adentro de ${aBorrar.entorno.distro} —configuración, sesión iniciada y conversaciones— queda intacto. Volver a agregarla la recupera tal cual.`
+              ? `¿Quitar la cuenta? Sólo se da de baja del panel: adentro de ${aBorrar.entorno.distro} no se toca nada —ni su ~/.claude ni la carpeta de esta cuenta, con su sesión iniciada—. Las conversaciones son de la distro, no de la cuenta.`
               : '¿Quitar la cuenta? Se borra su configuración y su sesión iniciada. Las conversaciones no se tocan: son compartidas por todas las cuentas.'}
           </p>
           <button
@@ -556,25 +561,24 @@ export default function Sidebar(props: Props) {
             </button>
             {nuevoEn === slug && (
               <div className="nueva-en">
-                {/* Igual que la barra de SessionList: crear en terminal con
-                    la cuenta activa usa el lanzador de WSL (Task 14), ya no
-                    se deshabilita. */}
+                {/* La carpeta de un proyecto de la distro viaja con su
+                    distro: el `cwd` es POSIX y del lado de Windows sólo se
+                    encuentra traducido a la UNC de ESA distro (ver
+                    `carpetaDeTrabajo` en main.ts). */}
                 <button
                   className="link"
                   onClick={() => {
                     setNuevoEn(null);
-                    props.onNewSessionIn(group[0].cwd);
+                    props.onNewSessionIn(group[0].cwd, distroDe(group[0]));
                   }}
                 >
                   Terminal
                 </button>
-                {/* Igual que en SessionList: la carpeta de la distro se
-                    traduce a UNC en `desktop:openIn`. */}
                 <button
                   className="link"
                   onClick={() => {
                     setNuevoEn(null);
-                    props.onNewSessionInDesktop(group[0].cwd);
+                    props.onNewSessionInDesktop(group[0].cwd, distroDe(group[0]));
                   }}
                 >
                   Desktop

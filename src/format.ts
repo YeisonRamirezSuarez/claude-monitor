@@ -1,4 +1,4 @@
-import type { Entorno, Raiz } from '../shared/types';
+import type { Entorno, Raiz, SessionMeta } from '../shared/types';
 
 /**
  * Si lo que la app afirma de una cuenta salió de mirar su disco, o de negarse a
@@ -53,20 +53,28 @@ export const hablarDeChrome = (entorno: Entorno | undefined): boolean => entorno
 export const etiquetaDeEntorno = (e: Entorno): string => (e.tipo === 'wsl' ? e.distro : '');
 
 /**
- * Por qué "Borrar" sigue deshabilitado en una sesión de la distro. Un botón
+ * Por qué un botón sigue deshabilitado en una sesión de la distro. Un botón
  * deshabilitado sin motivo se lee como un bug; con motivo, como una frontera.
  *
- * Es el ÚNICO que queda. Antes también cubría los botones de Desktop, sobre la
- * premisa de que "Desktop es una app de Windows y no puede hospedar una sesión
- * de la distro" — falsa: Desktop tiene su propio selector Local / Nube /
- * Control remoto / WSL / SSH. Reanudar y crear en Desktop ya andan con una
- * cuenta de la distro, así que esa rama se fue con ellos.
+ * Dos motivos distintos, y ninguno es "Desktop es una app de Windows" (eso era
+ * falso: Desktop tiene su propio selector Local / Nube / WSL / SSH, y "Nueva en
+ * Desktop…" anda con la carpeta de la distro):
  *
- * Borrar no es una imposibilidad técnica —por la UNC funcionaría— sino una
- * decisión de producto: spec §9.
+ *   - Borrar no es una imposibilidad técnica —por la UNC funcionaría— sino una
+ *     decisión de producto: spec §9.
+ *   - Reanudar en Desktop sí es una imposibilidad, pero del enlace: el
+ *     `claude://resume` con el que Desktop importa una conversación la abre
+ *     siempre como sesión LOCAL de Windows (verificado en su bundle), y una
+ *     conversación que corrió adentro de la distro tiene su carpeta en
+ *     `/home/…`, que de este lado no existe. El handler lo rechaza igual; acá
+ *     se dice antes del clic.
  */
-export const motivoDeshabilitado = (e: Entorno): string =>
-  e.tipo === 'wsl' ? `Borrar sesiones de ${e.distro} no está disponible todavía` : '';
+export const motivoDeshabilitado = (e: Entorno, accion: 'borrar' | 'desktop' = 'borrar'): string => {
+  if (e.tipo !== 'wsl') return '';
+  return accion === 'desktop'
+    ? `Claude Desktop no puede seguir una conversación que corre adentro de ${e.distro}: su enlace de importar sólo abre sesiones locales de Windows. Reanudala en terminal, o abrí la carpeta con "Nueva en Desktop…".`
+    : `Borrar sesiones de ${e.distro} no está disponible todavía`;
+};
 
 const RELATIVE = new Intl.RelativeTimeFormat('es', { numeric: 'auto' });
 const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
@@ -98,6 +106,7 @@ export function relativeDate(ms: number): string {
 const MOTIVOS: Record<string, string> = {
   'sin-credenciales': 'esta cuenta no tiene la sesión iniciada',
   'token-vencido': 'el token venció; usá la cuenta una vez y se renueva solo',
+  'sesion-rechazada': 'la API rechazó el token: la sesión se cerró o se revocó, hay que autorizar de nuevo',
   'sin-limites': 'la API respondió sin límites',
   'api-rechazo': 'la API rechazó la consulta',
   'sin-respuesta': 'sin respuesta de la API (red o demora)'
@@ -177,3 +186,68 @@ export function raicesMudas(raices: Raiz[]): Array<{ distro: string; mensaje: st
     // `key` de React, que además es un bug de renderizado.
     .filter(({ distro }) => !vistas.has(distro) && vistas.add(distro));
 }
+
+/**
+ * La raíz de lectura de una cuenta, si tiene una propia.
+ *
+ * Por distro y no por `configDir`: la raíz de una distro es su pozo
+ * (`~/.claude`) y la carpeta de una cuenta es `~/.claude-monitor/<id>`, así
+ * que comparando rutas nunca coincidían y toda cuenta WSL nueva quedaba en
+ * "sin mirar" con la distro andando. Las cuentas de Windows no tienen raíz
+ * propia: comparten el pozo.
+ */
+export function raizDeCuenta(raices: Raiz[], entorno: Entorno | undefined): Raiz | undefined {
+  if (entorno?.tipo !== 'wsl') return undefined;
+  return raices.find((r) => r.entorno.tipo === 'wsl' && r.entorno.distro === entorno.distro);
+}
+
+/**
+ * Las sesiones que son la MISMA conversación, juntas.
+ *
+ * Una bifurcación —`claude --fork-session`, o el "rebobinar" de Claude
+ * Desktop, que bifurca por debajo— copia el transcript entero a un `.jsonl`
+ * nuevo con otro id. En disco son dos archivos; en la lista eran dos tarjetas
+ * con el mismo primer mensaje y la misma carpeta, y se leían como "se me
+ * duplicó la sesión". Medido en esta máquina: 11 conversaciones con dos o más
+ * copias, una de ellas con ocho.
+ *
+ * Se agrupan por `linaje` (ver `ParsedSession`) dentro de la misma raíz. La
+ * carpeta no separa: Desktop copia un transcript a otra carpeta de proyecto
+ * cuando la original no le sirve (verificado en su bundle: "retargeting" y
+ * "Migrated transcript … from … to …", dejando el origen), y eso es la misma
+ * conversación con el mismo id en dos lugares. Otra raíz sí separa: es otro
+ * disco, y lo que vive en la distro no se toca desde acá.
+ *
+ * La principal es la primera que aparece: la lista viene ordenada
+ * por fecha de escritura, así que es la copia que más recientemente se usó,
+ * que es la que el usuario espera encontrar. Las demás no desaparecen: quedan
+ * plegadas debajo, porque una bifurcación puede haber seguido su propio
+ * camino y borrarla de la vista sería esconder trabajo.
+ *
+ * Sin `linaje` no se agrupa nada: sin dato no hay afirmación.
+ */
+export function agruparLinajes(
+  sesiones: SessionMeta[]
+): Array<{ clave: string; principal: SessionMeta; otras: SessionMeta[] }> {
+  const grupos = new Map<string, { clave: string; principal: SessionMeta; otras: SessionMeta[] }>();
+  for (const s of sesiones) {
+    const clave = s.linaje ? `${s.raiz}|${s.linaje}` : `id|${s.projectSlug}|${s.id}`;
+    const grupo = grupos.get(clave);
+    if (grupo) grupo.otras.push(s);
+    else grupos.set(clave, { clave, principal: s, otras: [] });
+  }
+  return [...grupos.values()];
+}
+
+/**
+ * La raíz de una distro vista desde Windows.
+ *
+ * Es dónde abre el selector de carpeta cuando el usuario elige trabajar
+ * adentro de una distro. Sirve para eso y nada más: la ruta que termina
+ * usándose es la que él elija ahí abajo.
+ *
+ * Existe acá y no en `wsl.ts` porque el que la necesita es el renderer, y
+ * `wsl.ts` vive del otro lado —importa `node:child_process`—. Son dos
+ * literales; compartir el módulo entero para eso costaría más que repetirlos.
+ */
+export const raizUNC = (distro: string): string => `\\\\wsl.localhost\\${distro}`;

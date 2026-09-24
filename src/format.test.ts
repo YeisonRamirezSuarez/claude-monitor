@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type { Raiz } from '../shared/types';
+import type { Raiz, SessionMeta } from '../shared/types';
 import {
+  agruparLinajes,
   estadoDeSesion,
   etiquetaDeEntorno,
   hablarDeChrome,
   motivoDeshabilitado,
   procedenciaDeConsumo,
+  raizDeCuenta,
+  raizUNC,
   raicesMudas,
   seLeMiroElDisco,
   textoDeMotivo
@@ -28,16 +31,23 @@ describe('etiquetaDeEntorno', () => {
 });
 
 describe('motivoDeshabilitado', () => {
-  // Quedó uno solo: borrar. Los de Desktop se fueron cuando reanudar y crear
-  // en Desktop empezaron a andar con una cuenta de la distro.
+  const UBUNTU = { tipo: 'wsl', distro: 'Ubuntu', home: '/home/v' } as const;
+
   it('borrar es una decisión de producto, no una imposibilidad', () => {
-    expect(motivoDeshabilitado({ tipo: 'wsl', distro: 'Ubuntu', home: '/home/v' })).toBe(
-      'Borrar sesiones de Ubuntu no está disponible todavía'
-    );
+    expect(motivoDeshabilitado(UBUNTU)).toBe('Borrar sesiones de Ubuntu no está disponible todavía');
   });
 
-  it('en Windows no hay motivo: el botón anda', () => {
+  // El botón estaba habilitado con un tooltip que prometía seguir la
+  // conversación, y el handler la rechazaba siempre: el motivo va antes del clic.
+  it('reanudar en Desktop dice por qué no y qué hacer en cambio', () => {
+    const motivo = motivoDeshabilitado(UBUNTU, 'desktop');
+    expect(motivo).toContain('adentro de Ubuntu');
+    expect(motivo).toContain('Reanudala en terminal');
+  });
+
+  it('en Windows no hay motivo: los botones andan', () => {
     expect(motivoDeshabilitado({ tipo: 'windows' })).toBe('');
+    expect(motivoDeshabilitado({ tipo: 'windows' }, 'desktop')).toBe('');
   });
 });
 ;
@@ -179,5 +189,80 @@ describe('raicesMudas', () => {
     expect(raicesMudas([wsl({ tipo: 'sin-cli', mensaje: 'Falta el CLI en Ubuntu' })])[0].mensaje).toBe(
       'Falta el CLI en Ubuntu'
     );
+  });
+});
+
+describe('raizDeCuenta', () => {
+  // Caso real: la cuenta vive en ~/.claude-monitor/<id> y la raíz es el pozo
+  // ~/.claude de la distro. Por configDir no coincidían nunca.
+  it('empareja por distro, aunque el configDir de la cuenta no sea el pozo', () => {
+    const raiz = raizCon({ tipo: 'ok' });
+    const cuenta = { tipo: 'wsl', distro: 'Ubuntu', home: '/home/v' } as const;
+    expect(raizDeCuenta([raiz], cuenta)).toBe(raiz);
+  });
+
+  it('otra distro no es su raíz, y una cuenta de Windows no tiene ninguna', () => {
+    const raiz = raizCon({ tipo: 'ok' });
+    expect(raizDeCuenta([raiz], { tipo: 'wsl', distro: 'Debian', home: '/home/v' })).toBeUndefined();
+    expect(raizDeCuenta([raiz], { tipo: 'windows' })).toBeUndefined();
+    expect(raizDeCuenta([raiz], undefined)).toBeUndefined();
+  });
+});
+
+describe('agruparLinajes', () => {
+  // Caso real: Desktop rebobinó una conversación y el CLI la copió a un
+  // .jsonl nuevo. Dos archivos, un solo primer mensaje.
+  const sesion = (id: string, linaje: string, mtime: number, extra: Partial<SessionMeta> = {}): SessionMeta => ({
+    id,
+    linaje,
+    mtime,
+    cwd: 'C:\\p',
+    gitBranch: '',
+    preview: 'revisa el flujo',
+    projectSlug: 'C--p',
+    sizeBytes: 1,
+    raiz: 'C:\\Users\\v\\.claude',
+    entorno: { tipo: 'windows' },
+    ...extra
+  });
+
+  it('junta las copias de la misma conversación y la más reciente va de principal', () => {
+    // Ordenadas por fecha, como llegan de sessions:list.
+    const grupos = agruparLinajes([sesion('nueva', 'u1', 200), sesion('vieja', 'u1', 100), sesion('otra', 'u2', 50)]);
+    expect(grupos.map((g) => [g.principal.id, g.otras.map((o) => o.id)])).toEqual([
+      ['nueva', ['vieja']],
+      ['otra', []]
+    ]);
+  });
+
+  it('sin linaje no afirma nada: dos archivos sin uuid quedan separados aunque se parezcan', () => {
+    const grupos = agruparLinajes([sesion('a', '', 2), sesion('b', '', 1)]);
+    expect(grupos).toHaveLength(2);
+  });
+
+  it('el mismo linaje en otra raíz es otra conversación; en otra carpeta de la misma raíz, la misma', () => {
+    const grupos = agruparLinajes([
+      sesion('a', 'u1', 3),
+      sesion('b', 'u1', 2, { raiz: '\\\\wsl.localhost\\Ubuntu\\home\\v\\.claude' }),
+      // Desktop la copió a otra carpeta de proyecto, con el mismo id.
+      sesion('a', 'u1', 1, { projectSlug: 'C--q' })
+    ]);
+    expect(grupos.map((g) => [g.principal.id, g.otras.length])).toEqual([
+      ['a', 1],
+      ['b', 0]
+    ]);
+  });
+});
+
+describe('raizUNC', () => {
+  // El unico punto donde esto se puede romper es la cuenta de barras: dos al
+  // principio y una separando. Con una de menos el selector abre en cualquier
+  // lado y con una de mas no abre en ninguno, y las dos fallan calladas.
+  it('arma la raiz de la distro con las barras que van', () => {
+    expect(raizUNC('Ubuntu')).toBe('\\\\wsl.localhost\\Ubuntu');
+  });
+
+  it('un nombre con puntos y guiones pasa tal cual', () => {
+    expect(raizUNC('Ubuntu-22.04')).toBe('\\\\wsl.localhost\\Ubuntu-22.04');
   });
 });

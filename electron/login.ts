@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { sessionEnv } from './terminal';
-import { WINDOWS } from './wsl';
+import { WINDOWS, argsDeLanzamiento, windowsAPosix } from './wsl';
 import type { Entorno } from '../shared/types';
 
 /**
@@ -63,10 +63,24 @@ export function looksSuccessful(output: string): boolean {
  * navegador equivocado, que era el problema original.
  */
 
-/** Con qué se lanza el login. En Windows es un `.cmd`, que desde Node 20 no se
- *  puede spawnear sin shell; en WSL es el CLI de la distro, y ahí no hace falta
- *  shell porque `wsl.exe` es un ejecutable de verdad. */
-export function comandoDeLogin(entorno: Entorno): {
+/**
+ * Con qué se lanza el login. En Windows es un `.cmd`, que desde Node 20 no se
+ * puede spawnear sin shell; en WSL es el CLI de la distro, y ahí no hace falta
+ * shell porque `wsl.exe` es un ejecutable de verdad.
+ *
+ * En WSL el `CLAUDE_CONFIG_DIR` de la cuenta va por `export` adentro del
+ * script, con el mismo argv que usa la terminal (`argsDeLanzamiento`): el
+ * `env` del proceso `wsl.exe` de Windows no cruza a la distro. Sin esto el
+ * `claude` de adentro guardaba el token en su default, `$HOME/.claude`, y la
+ * app lo buscaba en la carpeta de la cuenta —`~/.claude-monitor/<id>`— así que
+ * una cuenta WSL recién creada nunca llegaba a verse autenticada, y "Configurar
+ * Claude" se pedía en bucle. `configDirPosix` es esa carpeta vista desde
+ * adentro; el `--cd` al home es sólo porque el argv lo exige.
+ */
+export function comandoDeLogin(
+  entorno: Entorno,
+  configDirPosix = ''
+): {
   command: string;
   args: string[];
   shell: boolean;
@@ -74,13 +88,7 @@ export function comandoDeLogin(entorno: Entorno): {
   if (entorno.tipo === 'wsl') {
     return {
       command: 'wsl.exe',
-      // `--exec` y no `--` (ni su alias `-e`): con `--` el comando pasa por el
-      // shell de login de la distro, que lo re-expande antes de que llegue a
-      // este `bash -lc` (ver el comentario de `argsDeLanzamiento` en `wsl.ts`).
-      // Acá el comando es un literal fijo así que no cambia el resultado, pero
-      // se usa `--exec` igual: la próxima llamada que se agregue en este
-      // archivo no debería tener que elegir entre dos formas de separar.
-      args: ['-d', entorno.distro, '--exec', 'bash', '-lc', 'claude auth login'],
+      args: argsDeLanzamiento(entorno.distro, entorno.home, configDirPosix, 'claude auth login', ''),
       shell: false
     };
   }
@@ -97,24 +105,20 @@ export function comandoDeLogin(entorno: Entorno): {
  * En una cuenta WSL, `env` (con el `CLAUDE_CONFIG_DIR` de esta cuenta) queda
  * puesto en el proceso `wsl.exe` de WINDOWS y no cruza a la distro —a
  * propósito, no se usa `WSLENV`, ver el comentario de `argsDeLanzamiento` en
- * `wsl.ts`—, así que el `claude` de adentro arranca sin esa variable y usa su
- * default, `$HOME/.claude`. Eso SÍ coincide con el `configDir` que la app
- * tiene registrado para la cuenta: `configDirUNC(distro, home)` en `wsl.ts` es
- * justamente la vista UNC de `$HOME/.claude`, con el mismo `home` que se le
- * preguntó a la distro una sola vez al darla de alta (`homeDe`, en `wsl.ts`).
- * No es casualidad — es la misma cuenta ($HOME) preguntada dos veces por el
- * mismo medio (`bash -lc`) — pero si el perfil de shell del usuario exporta un
- * `CLAUDE_CONFIG_DIR` propio en `.bashrc`/`.profile`, ese override gana y deja
- * de coincidir; ese riesgo ya existía antes de esta tarea (lo mismo le pasa a
- * `hayCliEn`) y no se resuelve acá.
+ * `wsl.ts`—. La variable entra por el `export` del script (ver
+ * `comandoDeLogin`), traducida a POSIX desde la UNC con la que la app la tiene
+ * registrada. Una cuenta vieja, de las que adoptaban el `~/.claude` entero,
+ * traduce a ese mismo `~/.claude`, así que para ella nada cambia.
  */
 export async function startLogin(id: string, configDir: string, entorno: Entorno = WINDOWS): Promise<string> {
   cancelLogin(id);
 
   const env = sessionEnv(process.env, configDir);
+  const configDirPosix =
+    entorno.tipo === 'wsl' ? (configDir.startsWith('/') ? configDir : windowsAPosix(entorno.distro, configDir)) : '';
 
   return new Promise((resolve, reject) => {
-    const { command, args, shell } = comandoDeLogin(entorno);
+    const { command, args, shell } = comandoDeLogin(entorno, configDirPosix);
     const child = spawn(command, args, { env, shell });
     const state: Pending = { child, output: '' };
     pending.set(id, state);

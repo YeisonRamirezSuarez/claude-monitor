@@ -46,7 +46,8 @@ describe('parseSessionLines', () => {
     expect(parseSessionLines([OPERATION, USER_LINE])).toEqual({
       cwd: 'C:\\Users\\WPOSS\\proyecto',
       gitBranch: 'master',
-      preview: 'arregla el login'
+      preview: 'arregla el login',
+      linaje: 'abc-123'
     });
   });
 
@@ -68,8 +69,40 @@ describe('parseSessionLines', () => {
     expect(parseSessionLines([meta, user])).toEqual({
       cwd: '/w',
       gitBranch: 'dev',
-      preview: 'segunda'
+      preview: 'segunda',
+      linaje: 'ghi-789'
     });
+  });
+
+  // El linaje es lo que permite decir "estas dos son la misma conversación".
+  // Una bifurcación copia el transcript del padre, así que su primera línea
+  // con `uuid` es la misma. Y el CLI a veces re-estampa el `sessionId` de las
+  // líneas copiadas (medido: 2.1.258 no, 2.1.260 sí), por eso manda el uuid.
+  it('el linaje es el primer uuid, aunque el sessionId venga re-estampado', () => {
+    const padre = JSON.stringify({ type: 'user', uuid: 'u-1', sessionId: 'padre', cwd: '/w', message: { content: 'hola' } });
+    const copia = JSON.stringify({ type: 'user', uuid: 'u-1', sessionId: 'hija', cwd: '/w', message: { content: 'hola' } });
+    expect(parseSessionLines([padre])?.linaje).toBe('u-1');
+    expect(parseSessionLines([copia])?.linaje).toBe('u-1');
+  });
+
+  it('sin uuid cae al sessionId, y sin ninguno queda vacío', () => {
+    const conSid = JSON.stringify({ type: 'user', sessionId: 'sid-1', cwd: '/w', message: { content: 'hola' } });
+    const pelada = JSON.stringify({ type: 'user', cwd: '/w', message: { content: 'hola' } });
+    expect(parseSessionLines([conSid])?.linaje).toBe('sid-1');
+    expect(parseSessionLines([pelada])?.linaje).toBe('');
+  });
+
+  // Caso real (pozo de esta máquina): el transcript arranca con líneas de
+  // estado del CLI —custom-title, mode— que traen sessionId pero no uuid, y
+  // en la copia rebobinada ese sessionId ya viene re-estampado. Si el
+  // sessionId ganara por llegar primero, padre y copia tendrían linajes
+  // distintos y la lista las seguiría mostrando como dos.
+  it('un sessionId que llega antes que el uuid no le gana al uuid', () => {
+    const estado = (sid: string) => JSON.stringify({ type: 'custom-title', sessionId: sid, customTitle: 'x' });
+    const primera = (sid: string) =>
+      JSON.stringify({ type: 'user', uuid: 'u-compartido', sessionId: sid, cwd: '/w', message: { content: 'hola' } });
+    expect(parseSessionLines([estado('padre'), primera('padre')])?.linaje).toBe('u-compartido');
+    expect(parseSessionLines([estado('hija'), primera('hija')])?.linaje).toBe('u-compartido');
   });
 
   it('ignora los mensajes user que son resultados de herramienta', () => {
@@ -224,6 +257,16 @@ describe('identidad de la sesión: el archivo, no el sessionId de adentro', () =
     }
   });
 
+  it('el padre y el fork comparten linaje: la lista los puede juntar', async () => {
+    const { tmp } = await makeForkFixture();
+    try {
+      const linajes = new Set((await listSessions(tmp, WINDOWS)).map((s) => s.linaje));
+      expect([...linajes]).toEqual(['aaaaaaaa-0000-4000-8000-000000000001']);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('borrar el fork deja intacto el archivo del padre', async () => {
     const { tmp, padre, fork } = await makeForkFixture();
     try {
@@ -251,6 +294,23 @@ describe('mezclarRaices', () => {
   it('una raíz vacía no rompe la mezcla', () => {
     const a = [{ id: 'a', mtime: 100, raiz: 'C:\\p', entorno: w }] as any;
     expect(mezclarRaices([a, []]).map((s) => s.id)).toEqual(['a']);
+  });
+});
+
+describe('listSessions: espejos de Desktop', () => {
+  it('saltea projects/ssh-<id>: es la copia local de una conversación remota, no una sesión', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'claude-monitor-espejo-test-'));
+    try {
+      const line = JSON.stringify({ type: 'user', uuid: 'u-1', cwd: '/home/v/p', message: { content: 'hola' } });
+      const id = 'aaaaaaaa-0000-4000-8000-000000000001';
+      await mkdir(join(tmp, 'projects', `ssh-${id}`), { recursive: true });
+      await writeFile(join(tmp, 'projects', `ssh-${id}`, `${id}.jsonl`), line + '\n');
+      await mkdir(join(tmp, 'projects', 'C--p'), { recursive: true });
+      await writeFile(join(tmp, 'projects', 'C--p', 'bbbbbbbb-0000-4000-8000-000000000002.jsonl'), line + '\n');
+      expect((await listSessions(tmp, WINDOWS)).map((s) => s.id)).toEqual(['bbbbbbbb-0000-4000-8000-000000000002']);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
   });
 });
 
