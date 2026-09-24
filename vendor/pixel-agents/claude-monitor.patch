@@ -333,6 +333,80 @@ index 0000000..41eb43c
 +  areaTiles,
 +};
 +process.stdout.write(JSON.stringify(layout));
+diff --git a/server/__tests__/claudeMonitorHooks.test.ts b/server/__tests__/claudeMonitorHooks.test.ts
+new file mode 100644
+index 0000000..570683e
+--- /dev/null
++++ b/server/__tests__/claudeMonitorHooks.test.ts
+@@ -0,0 +1,68 @@
++/**
++ * claude-monitor patch: the Claude provider installs, checks and removes the
++ * hooks in every claude-monitor account (profiles.json), skipping WSL ones and
++ * accounts whose config dir does not exist.
++ */
++
++import * as fs from 'fs';
++import * as os from 'os';
++import * as path from 'path';
++import { afterEach, beforeEach, expect, it, vi } from 'vitest';
++
++let tmpBase: string;
++
++vi.mock('os', async () => {
++  const actual = await vi.importActual<typeof import('os')>('os');
++  return { ...actual, homedir: () => tmpBase };
++});
++
++const { claudeProvider } = await import('../src/providers/hook/claude/claude.js');
++
++let savedAppData: string | undefined;
++const settings = (dir: string) => path.join(dir, 'settings.json');
++const hasOurHook = (dir: string) =>
++  fs.existsSync(settings(dir)) && fs.readFileSync(settings(dir), 'utf8').includes('claude-hook.js');
++
++beforeEach(() => {
++  tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cm-hooks-'));
++  savedAppData = process.env.APPDATA;
++  process.env.APPDATA = path.join(tmpBase, 'appdata');
++});
++
++afterEach(() => {
++  process.env.APPDATA = savedAppData;
++  fs.rmSync(tmpBase, { recursive: true, force: true });
++});
++
++it('installs in every account, skipping WSL and missing dirs, and uninstalls from all', async () => {
++  const main = path.join(tmpBase, '.claude');
++  const other = path.join(tmpBase, 'profiles', 'b');
++  const wsl = path.join(tmpBase, 'profiles', 'wsl');
++  const missing = path.join(tmpBase, 'profiles', 'missing');
++  for (const d of [main, other, wsl]) fs.mkdirSync(d, { recursive: true });
++  fs.writeFileSync(settings(other), JSON.stringify({ permissions: { allow: ['Read'] } }));
++  fs.mkdirSync(path.join(tmpBase, 'appdata', 'claude-monitor'), { recursive: true });
++  fs.writeFileSync(
++    path.join(tmpBase, 'appdata', 'claude-monitor', 'profiles.json'),
++    JSON.stringify({
++      profiles: [
++        { id: 'b', configDir: other },
++        { id: 'w', configDir: wsl, entorno: { tipo: 'wsl' } },
++        { id: 'm', configDir: missing },
++      ],
++    }),
++  );
++
++  await claudeProvider.installHooks('http://127.0.0.1:1', 't');
++  expect(hasOurHook(main)).toBe(true);
++  expect(hasOurHook(other)).toBe(true);
++  expect(JSON.parse(fs.readFileSync(settings(other), 'utf8')).permissions.allow).toEqual(['Read']);
++  expect(fs.existsSync(settings(wsl))).toBe(false);
++  expect(fs.existsSync(missing)).toBe(false);
++  expect(await claudeProvider.areHooksInstalled()).toBe(true);
++
++  await claudeProvider.uninstallHooks();
++  expect(hasOurHook(main)).toBe(false);
++  expect(hasOurHook(other)).toBe(false);
++  expect(await claudeProvider.areHooksInstalled()).toBe(false);
++});
 diff --git a/server/__tests__/configPersistence.test.ts b/server/__tests__/configPersistence.test.ts
 index 62174ae..ca1ac99 100644
 --- a/server/__tests__/configPersistence.test.ts
@@ -571,10 +645,18 @@ index 0000000..c38d83b
 +  }
 +}
 diff --git a/server/src/cli.ts b/server/src/cli.ts
-index 0885dd7..a77d484 100644
+index 0885dd7..8a1684f 100644
 --- a/server/src/cli.ts
 +++ b/server/src/cli.ts
-@@ -244,7 +244,14 @@ async function main(): Promise<void> {
+@@ -8,6 +8,7 @@
+  * Each connecting WebSocket client receives the full state on webviewReady.
+  */
+ 
++import * as fs from 'fs';
+ import * as path from 'path';
+ 
+ import { AgentRuntime } from './agentRuntime.js';
+@@ -244,7 +245,14 @@ async function main(): Promise<void> {
      // runtime's single hooksEnabled ref follows the Claude provider until the
      // scanners grow per-provider awareness alongside the Settings UI.
      runtime.hooksEnabled.current = getHooksEnabled(claudeProvider.id);
@@ -590,7 +672,24 @@ index 0885dd7..a77d484 100644
  
      // Install hooks on startup if the persisted setting says so — gated on the
      // one-time consent to modify ~/.claude/settings.json.
-@@ -316,6 +323,22 @@ async function main(): Promise<void> {
+@@ -282,6 +290,16 @@ async function main(): Promise<void> {
+       );
+     }
+ 
++    // claude-monitor patch: an account added while this runs gets the hooks
++    // too (install is idempotent: accounts that have them are left as they are).
++    const profilesFile = path.join(process.env.APPDATA || '', 'claude-monitor', 'profiles.json');
++    fs.watchFile(profilesFile, { interval: 5000 }, () => {
++      if (!getHooksEnabled(claudeProvider.id) || getHooksConsent(claudeProvider.id) !== 'granted') return;
++      claudeProvider
++        .installHooks(`http://127.0.0.1:${config.port}`, config.token)
++        .catch((err) => console.error(`[Pixel Agents] ${err instanceof Error ? err.message : String(err)}`));
++    });
++
+     // Start scanning for external sessions (Claude running in user's terminal)
+     const cwd = process.cwd();
+     const dirs = claudeProvider.getSessionDirs?.(cwd);
+@@ -316,6 +334,22 @@ async function main(): Promise<void> {
  
      process.on('SIGINT', shutdown);
      process.on('SIGTERM', shutdown);
@@ -819,10 +918,10 @@ index a84cebe..fac7dbd 100644
  export function pathsMatch(left: string, right: string): boolean {
    return toPathKey(left) === toPathKey(right);
 diff --git a/server/src/providers/hook/claude/claude.ts b/server/src/providers/hook/claude/claude.ts
-index 1f7bbe9..d14c0fd 100644
+index 1f7bbe9..7233f47 100644
 --- a/server/src/providers/hook/claude/claude.ts
 +++ b/server/src/providers/hook/claude/claude.ts
-@@ -74,29 +74,52 @@ export function formatToolStatus(toolName: string, input?: unknown): string {
+@@ -74,29 +74,80 @@ export function formatToolStatus(toolName: string, input?: unknown): string {
  
  // ── Session dir + launch command ──
  
@@ -833,14 +932,30 @@ index 1f7bbe9..d14c0fd 100644
 -
 -  // Try exact match first.
 -  if (fs.existsSync(projectDir)) return [projectDir];
--
--  // Case-insensitive fallback for Windows: drive letter casing can differ
--  // between what VS Code gives us (e.g. "c:\...") and Claude's encoding ("C:\...").
--  const projectsRoot = path.join(os.homedir(), '.claude', 'projects');
 +// Local patch (claude-monitor): also scan every claude-monitor profile, one
 +// CLAUDE_CONFIG_DIR per account.
 +function claudeConfigDirs(): string[] {
 +  const dirs = [path.join(os.homedir(), '.claude')];
++  try {
++    const file = path.join(process.env.APPDATA || '', 'claude-monitor', 'profiles.json');
++    for (const p of JSON.parse(fs.readFileSync(file, 'utf8')).profiles || []) {
++      const dir = typeof p.configDir === 'string' ? p.configDir : '';
++      if (dir && !dirs.some((d) => d.toLowerCase() === dir.toLowerCase())) dirs.push(dir);
++    }
++  } catch {
++    /* no claude-monitor */
++  }
++  return dirs;
++}
+ 
+-  // Case-insensitive fallback for Windows: drive letter casing can differ
+-  // between what VS Code gives us (e.g. "c:\...") and Claude's encoding ("C:\...").
+-  const projectsRoot = path.join(os.homedir(), '.claude', 'projects');
++/** The accounts the hooks go into: every config dir that exists, except WSL
++ *  ones (their Claude runs inside the distro, where this Windows hook command
++ *  does not), deduped by real path like the session roots. */
++function hookConfigDirs(): string[] {
++  const wsl = new Set<string>();
    try {
 -    if (fs.existsSync(projectsRoot)) {
 -      const lowerDirName = dirName.toLowerCase();
@@ -848,14 +963,25 @@ index 1f7bbe9..d14c0fd 100644
 -      if (match) return [path.join(projectsRoot, match)];
 +    const file = path.join(process.env.APPDATA || '', 'claude-monitor', 'profiles.json');
 +    for (const p of JSON.parse(fs.readFileSync(file, 'utf8')).profiles || []) {
-+      const dir = typeof p.configDir === 'string' ? p.configDir : '';
-+      if (dir && !dirs.some((d) => d.toLowerCase() === dir.toLowerCase())) dirs.push(dir);
++      if (p?.entorno?.tipo === 'wsl' && typeof p.configDir === 'string') wsl.add(p.configDir.toLowerCase());
      }
    } catch {
 -    /* ignore scan errors */
 +    /* no claude-monitor */
    }
-+  return dirs;
++  const seen = new Set<string>();
++  return claudeConfigDirs().filter((dir) => {
++    if (wsl.has(dir.toLowerCase()) || dir.startsWith('\\\\')) return false;
++    let key: string;
++    try {
++      key = fs.realpathSync(dir).toLowerCase();
++    } catch {
++      return false; // not created yet: its first session will run without hooks
++    }
++    if (seen.has(key)) return false;
++    seen.add(key);
++    return true;
++  });
 +}
  
 -  // Return the expected path even if it doesn't exist yet (caller tolerates missing dirs).
@@ -893,7 +1019,7 @@ index 1f7bbe9..d14c0fd 100644
  }
  
  function buildLaunchCommand(
-@@ -112,7 +135,23 @@ function buildLaunchCommand(
+@@ -112,7 +163,23 @@ function buildLaunchCommand(
  /** Root that holds every Claude session across all workspaces. Used by the
   *  global session scanner ("Watch All Sessions"). */
  function getAllSessionRoots(): string[] {
@@ -918,6 +1044,227 @@ index 1f7bbe9..d14c0fd 100644
  }
  
  // ── normalizeHookEvent: the single Claude-specific normalization boundary ──
+@@ -251,16 +318,32 @@ function normalizeHookEvent(
+ 
+ /** Async so an installer throw (e.g. unparseable settings.json) always reaches
+  *  callers as a rejection they can surface, never a sync throw. */
++// claude-monitor patch: across every account. One account failing (e.g. its
++// settings.json does not parse) does not stop the others; the first error is
++// still reported once they are done.
++async function everyAccount(run: (dir: string) => Promise<void>): Promise<void> {
++  let first: unknown = null;
++  for (const dir of hookConfigDirs()) {
++    try {
++      await run(dir);
++    } catch (e) {
++      console.error(`[Pixel Agents] ${dir}: ${e instanceof Error ? e.message : String(e)}`);
++      first ??= e;
++    }
++  }
++  if (first) throw first;
++}
++
+ async function installHooks(_serverUrl: string, _authToken: string): Promise<void> {
+-  await installerInstallHooks();
++  await everyAccount((dir) => installerInstallHooks(dir));
+ }
+ 
+ async function uninstallHooks(): Promise<void> {
+-  await installerUninstallHooks();
++  await everyAccount((dir) => installerUninstallHooks(dir));
+ }
+ 
+ function areHooksInstalled(): Promise<boolean> {
+-  return Promise.resolve(installerAreHooksInstalled());
++  return Promise.resolve(hookConfigDirs().some((dir) => installerAreHooksInstalled(dir)));
+ }
+ 
+ /** This provider's first-run consent terms. The strings live in
+diff --git a/server/src/providers/hook/claude/claudeHookInstaller.ts b/server/src/providers/hook/claude/claudeHookInstaller.ts
+index c0996f0..b3be682 100644
+--- a/server/src/providers/hook/claude/claudeHookInstaller.ts
++++ b/server/src/providers/hook/claude/claudeHookInstaller.ts
+@@ -31,9 +31,15 @@ interface ClaudeSettings {
+   [key: string]: unknown;
+ }
+ 
+-/** Returns the absolute path to ~/.claude/settings.json. */
+-function getClaudeSettingsPath(): string {
+-  return path.join(os.homedir(), '.claude', 'settings.json');
++/** claude-monitor patch: every function below takes the Claude config dir it
++ *  works on (one per account, CLAUDE_CONFIG_DIR); ~/.claude by default. */
++export function defaultClaudeConfigDir(): string {
++  return path.join(os.homedir(), '.claude');
++}
++
++/** Returns the absolute path to <configDir>/settings.json. */
++function getClaudeSettingsPath(configDir = defaultClaudeConfigDir()): string {
++  return path.join(configDir, 'settings.json');
+ }
+ 
+ /** Returns the destination path for the hook script (~/.pixel-agents/hooks/claude-hook.js). */
+@@ -76,8 +82,8 @@ export const SETTINGS_HOOKS_NOT_OBJECT_MESSAGE =
+   'hooks in ~/.claude/settings.json is not an object — fix or remove it';
+ 
+ /** Raw file content, or null when the file does not exist. Throws on read errors. */
+-function readRawClaudeSettings(): string | null {
+-  const settingsPath = getClaudeSettingsPath();
++function readRawClaudeSettings(configDir?: string): string | null {
++  const settingsPath = getClaudeSettingsPath(configDir);
+   if (!fs.existsSync(settingsPath)) {
+     return null;
+   }
+@@ -100,8 +106,8 @@ function parseClaudeSettings(raw: string | null): ClaudeSettings {
+ }
+ 
+ /** Read and parse ~/.claude/settings.json (see parseClaudeSettings for the throw contract). */
+-function readClaudeSettings(): ClaudeSettings {
+-  return parseClaudeSettings(readRawClaudeSettings());
++function readClaudeSettings(configDir?: string): ClaudeSettings {
++  return parseClaudeSettings(readRawClaudeSettings(configDir));
+ }
+ 
+ function sleep(ms: number): Promise<void> {
+@@ -127,6 +133,7 @@ function sleep(ms: number): Promise<void> {
+  */
+ async function mutateClaudeSettings(
+   mutate: (settings: ClaudeSettings) => boolean,
++  configDir?: string,
+ ): Promise<boolean> {
+   let lastError: Error | null = null;
+   for (let attempt = 0; attempt < SETTINGS_MUTATE_ATTEMPTS; attempt++) {
+@@ -136,7 +143,7 @@ async function mutateClaudeSettings(
+     let raw: string | null;
+     let settings: ClaudeSettings;
+     try {
+-      raw = readRawClaudeSettings();
++      raw = readRawClaudeSettings(configDir);
+       settings = parseClaudeSettings(raw);
+     } catch (e) {
+       lastError = e instanceof Error ? e : new Error(String(e));
+@@ -146,7 +153,7 @@ async function mutateClaudeSettings(
+       return false;
+     }
+     try {
+-      writeClaudeSettings(settings, raw);
++      writeClaudeSettings(settings, raw, configDir);
+       return true;
+     } catch (e) {
+       if (!(e instanceof ConcurrentWriteError)) throw e;
+@@ -222,8 +229,12 @@ export function settingsUnusableBackupMessage(backupPath: string): string {
+  * swallowed: a caller that hears no error installs an entry pointing at a file
+  * that was never written.
+  */
+-function writeClaudeSettings(settings: ClaudeSettings, expectedRaw: string | null): void {
+-  const settingsPath = getClaudeSettingsPath();
++function writeClaudeSettings(
++  settings: ClaudeSettings,
++  expectedRaw: string | null,
++  configDir?: string,
++): void {
++  const settingsPath = getClaudeSettingsPath(configDir);
+   const dir = path.dirname(settingsPath);
+   const tmpPath = settingsPath + SETTINGS_TMP_SUFFIX;
+ 
+@@ -269,7 +280,7 @@ function writeClaudeSettings(settings: ClaudeSettings, expectedRaw: string | nul
+       mode: SETTINGS_FRESH_FILE_MODE,
+     });
+     fs.chmodSync(tmpPath, mode);
+-    if (readRawClaudeSettings() !== expectedRaw) {
++    if (readRawClaudeSettings(configDir) !== expectedRaw) {
+       throw new ConcurrentWriteError();
+     }
+     fs.renameSync(tmpPath, settingsPath);
+@@ -571,10 +582,10 @@ function makeHookEntry(): ClaudeHookEntry {
+  * An unparseable file reads as "not installed" — the install path will then
+  * refuse to touch it rather than rewrite it.
+  */
+-export function areHooksInstalled(): boolean {
++export function areHooksInstalled(configDir?: string): boolean {
+   let settings: ClaudeSettings;
+   try {
+-    settings = readClaudeSettings();
++    settings = readClaudeSettings(configDir);
+   } catch {
+     return false;
+   }
+@@ -594,21 +605,21 @@ export function areHooksInstalled(): boolean {
+  * keeps changing concurrently — callers surface the error to the user instead
+  * of installing.
+  */
+-export async function installHooks(): Promise<void> {
++export async function installHooks(configDir?: string): Promise<void> {
+   let wrote: boolean;
+   try {
+-    wrote = await installEntries();
++    wrote = await installEntries(configDir);
+   } catch (e) {
+     throw new Error(`${e instanceof Error ? e.message : String(e)} — hooks not installed.`, {
+       cause: e,
+     });
+   }
+   if (wrote) {
+-    console.log('[Pixel Agents] Hooks installed in ~/.claude/settings.json');
++    console.log(`[Pixel Agents] Hooks installed in ${getClaudeSettingsPath(configDir)}`);
+   }
+ }
+ 
+-function installEntries(): Promise<boolean> {
++function installEntries(configDir?: string): Promise<boolean> {
+   return mutateClaudeSettings((settings) => {
+     if (settings.hooks === undefined || settings.hooks === null) {
+       settings.hooks = {};
+@@ -673,7 +684,7 @@ function installEntries(): Promise<boolean> {
+       }
+     }
+     return changed;
+-  });
++  }, configDir);
+ }
+ 
+ /** Remove all Pixel Agents hook entries from ~/.claude/settings.json. Cleans up empty objects.
+@@ -681,7 +692,7 @@ function installEntries(): Promise<boolean> {
+  *  as install: never rewrite a file we could not read. Callers surface the
+  *  error; claiming success after an aborted uninstall is how a "removed"
+  *  log line ends up next to entries that are still live. */
+-export async function uninstallHooks(): Promise<void> {
++export async function uninstallHooks(configDir?: string): Promise<void> {
+   let wrote: boolean;
+   try {
+     wrote = await mutateClaudeSettings((settings) => {
+@@ -710,14 +721,14 @@ export async function uninstallHooks(): Promise<void> {
+         delete settings.hooks;
+       }
+       return changed;
+-    });
++    }, configDir);
+   } catch (e) {
+     throw new Error(`${e instanceof Error ? e.message : String(e)} — hook entries left in place.`, {
+       cause: e,
+     });
+   }
+   if (wrote) {
+-    console.log('[Pixel Agents] Hooks removed from ~/.claude/settings.json');
++    console.log(`[Pixel Agents] Hooks removed from ${getClaudeSettingsPath(configDir)}`);
+   }
+ }
+ 
+diff --git a/server/vitest.config.ts b/server/vitest.config.ts
+index 8626f94..744f013 100644
+--- a/server/vitest.config.ts
++++ b/server/vitest.config.ts
+@@ -1,6 +1,11 @@
++import * as os from 'os';
++import * as path from 'path';
+ import { defineConfig } from 'vitest/config';
+ 
+ process.env['ALLURE_LABEL_epic'] ??= 'server';
++// claude-monitor patch: the Claude provider reads the accounts in
++// %APPDATA%/claude-monitor/profiles.json; tests must never see the real ones.
++process.env['APPDATA'] = path.join(os.tmpdir(), 'pixel-agents-test-appdata');
+ 
+ export default defineConfig({
+   test: {
 diff --git a/webview-ui/public/assets/KENNEY-LICENSE.txt b/webview-ui/public/assets/KENNEY-LICENSE.txt
 new file mode 100644
 index 0000000..366da7f

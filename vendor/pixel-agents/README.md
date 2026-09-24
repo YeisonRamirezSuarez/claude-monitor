@@ -35,6 +35,10 @@ Qué agrega el parche:
   prenden en cada arranque (`cli.ts`; también son el valor por defecto en `configPersistence.ts`).
   Sin "Watch All Sessions" una PC sin los hooks aprobados no veía ninguna sesión, y la 0.19.0 lo
   dejaba guardado apagado.
+- **Hooks en todas las cuentas:** al aprobar los hooks (o con "Instant Detection") se instalan en el
+  `settings.json` de cada cuenta de `profiles.json` que exista, no sólo en `~/.claude`; las de WSL se
+  saltean (su Claude corre adentro de la distro). Una cuenta agregada con la oficina abierta los recibe
+  sola (se vigila `profiles.json`).
 - **Ciclo de vida:** arranca con la app y se cierra con ella; si la app muere sin cerrarlo, se va
   solo (`PIXEL_AGENTS_PARENT_PID`). Si no, el huérfano seguía y el próximo arranque lo reusaba.
 - **Nombres:** las etiquetas usan los nombres de `%APPDATA%\claude-monitor\nombres.json`, y si no hay,
