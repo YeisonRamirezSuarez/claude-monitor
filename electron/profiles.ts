@@ -15,6 +15,7 @@ import { shareAll, shareProjects, unlinkShared } from './shared-projects';
 import { readUsage } from './usage';
 import {
   WINDOWS,
+  configDirDeCuenta,
   configDirUNC,
   distrosCorriendo,
   distrosInstaladas,
@@ -22,6 +23,8 @@ import {
   estadoDeRaiz,
   hayCliEn,
   homeDe,
+  posixAWindows,
+  prepararCuentaEnDistro,
   sePuedeLeer
 } from './wsl';
 
@@ -319,23 +322,51 @@ export async function raices(): Promise<Raiz[]> {
 
   const [instaladas, corriendo] = await Promise.all([distrosInstaladas(), distrosCorriendo()]);
 
-  for (const p of wsl) {
-    const { distro } = p.entorno;
+  // UNA raíz por DISTRO, no una por cuenta, y es el POZO de la distro
+  // (`~/.claude`), no el `configDir` de cada cuenta. Dos motivos, los dos
+  // medidos:
+  //
+  //   - Las cuentas de una distro comparten `projects/` por un symlink de
+  //     Linux, igual que las de Windows lo comparten por un junction. Una raíz
+  //     por cuenta listaría las MISMAS sesiones N veces.
+  //   - Y ni siquiera las vería: Windows no atraviesa ese symlink por la UNC
+  //     (`Get-ChildItem` devuelve el enlace, un nivel más adentro da "no
+  //     existe"). El pozo, en cambio, es un directorio de verdad y se lee bien.
+  const distros = [...new Set(wsl.map((p) => p.entorno.distro))];
+  for (const distro of distros) {
+    const { home } = wsl.find((p) => p.entorno.distro === distro)!.entorno;
     // Sólo se mira el disco si la distro YA está corriendo. Si no, ni se toca.
     const arranca = corriendo.includes(distro) && instaladas.includes(distro);
-    const hayConfig = arranca ? Boolean(await stat(p.configDir).catch(() => null)) : false;
+    const pozo = configDirUNC(distro, home);
+    const hayConfig = arranca ? Boolean(await stat(pozo).catch(() => null)) : false;
     const hayCli = arranca ? await hayCliRecordado(distro, corriendo) : false;
     salida.push({
-      configDir: p.configDir,
-      entorno: p.entorno,
+      configDir: pozo,
+      entorno: { tipo: 'wsl', distro, home },
       estado: estadoDeRaiz({ distro, corriendo, instaladas, hayConfig, hayCli })
     });
   }
   return salida;
 }
 
-/** Da de alta una cuenta que vive en una distro. El `configDir` es ADOPTADO:
- *  no se crea nada en disco, y por eso `sePuedeBorrarDelDisco` lo protege. */
+/**
+ * Da de alta una cuenta que vive en una distro. Se pueden tener N por distro.
+ *
+ * Mismo modelo que en Windows y por el mismo motivo: cada cuenta es su propio
+ * CLAUDE_CONFIG_DIR —su login, su consumo— y lo único compartido es
+ * `projects/`. Acá el CLAUDE_CONFIG_DIR es `~/.claude-monitor/<id>` ADENTRO de
+ * la distro, y su `projects` es un symlink de Linux al `projects` del pozo de
+ * esa distro (`~/.claude/projects`), que es lo que ya usa `claude` cuando corre
+ * a mano.
+ *
+ * Antes esto ADOPTABA el `~/.claude` de la distro entero, y entonces dos
+ * cuentas eran la misma: mismo login, mismas credenciales, y cada sesión salía
+ * DUPLICADA en la lista porque `raices()` armaba una raíz por cuenta. Ahora la
+ * raíz es una por distro (el pozo), así que agregar cuentas no duplica nada.
+ *
+ * La carpeta se crea del lado de Linux (ver `prepararCuentaEnDistro`): un
+ * junction de Windows no se puede crear en ext4.
+ */
 export async function createWslProfile(name: string, distro: string): Promise<Profile> {
   const trimmed = name.trim();
   if (!trimmed) throw new Error('El nombre de la cuenta no puede estar vacío');
@@ -348,15 +379,17 @@ export async function createWslProfile(name: string, distro: string): Promise<Pr
   const home = await homeDe(distro);
   const registry = await loadRegistry();
   const id = randomUUID().slice(0, 8);
+  await prepararCuentaEnDistro(distro, home, id);
   const profile: Profile = {
     id,
     name: trimmed,
-    configDir: configDirUNC(distro, home),
+    configDir: posixAWindows(distro, configDirDeCuenta(home, id)),
     isDefault: false,
     entorno: { tipo: 'wsl', distro, home }
   };
-  // Ni mkdir, ni shareProjects, ni syncPlugins, ni ensureHostScript: la carpeta
-  // ya existe y es del usuario, el pozo no la admite, y Chrome es de Windows.
+  // Ni shareProjects, ni syncPlugins, ni ensureHostScript: el enlace de
+  // `projects` ya lo hizo `prepararCuentaEnDistro` del lado de Linux, el pozo
+  // de Windows no admite una cuenta de la distro, y Chrome es de Windows.
   registry.profiles.push(profile);
   await saveRegistry(registry);
   return profile;
@@ -381,10 +414,16 @@ export async function setActiveProfile(id: string): Promise<void> {
  *
  *   - El `~/.claude` real del usuario, que el guard viejo cubría por `isDefault`
  *     — un campo que sale de un archivo editable.
- *   - El `configDir` de una cuenta WSL, que apunta a la instalación real de
- *     Claude Code adentro de la distro: credenciales, historial y ajustes de
- *     esa persona. El borrado por UNC funciona, así que sin este guard el
- *     "eliminar cuenta" del panel se la llevaba puesta.
+ *   - El `configDir` de una cuenta WSL. Con `createWslProfile` esa carpeta hoy
+ *     la crea la app (`~/.claude-monitor/<id>` adentro de la distro), así que
+ *     por la regla de propiedad "se podría" borrar. NO SE HACE, y no es un
+ *     descuido: adentro tiene un `projects` que es un symlink de Linux al pozo
+ *     de la distro, y desde Windows ese enlace NO se ve como enlace —medido:
+ *     `Get-ChildItem` devuelve la entrada y un nivel más adentro da "no
+ *     existe"—. Si `lstat` por la UNC lo reporta como directorio, el `rm -rf`
+ *     lo seguiría y se llevaría puesto el historial entero de esa persona.
+ *     Dejar una carpeta huérfana es infinitamente más barato que eso. El
+ *     guard de acá abajo ya lo cubre: una UNC nunca cuelga de `profilesRoot()`.
  */
 export function sePuedeBorrarDelDisco(configDir: string, raizDePerfiles: string): boolean {
   const rel = relative(raizDePerfiles, configDir);

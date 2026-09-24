@@ -34,9 +34,10 @@ export const WINDOWS: Entorno = { tipo: 'windows' };
  * llegar. Devuelve `null` si esa cuenta ya no existe, para poder explicarlo en
  * vez de abrir una terminal con la cuenta equivocada.
  *
- * La dirección espejo también devuelve `null`, y no es teórica: `visibleProfiles`
- * oculta la cuenta `default` en cuanto hay una propia, así que quien tiene una
- * sola cuenta propia y es de WSL la tiene ACTIVA. Reanudar con ella una sesión
+ * La dirección espejo también devuelve `null`, y no es teórica: basta con tener
+ * una cuenta de WSL activa —lo normal mientras se trabaja adentro de la
+ * distro— y tocar una sesión de Windows de la lista, que siempre está ahí
+ * porque el pozo de Windows se lee siempre. Reanudar con ella una sesión
  * de Windows abriría `claude` adentro de la distro con `CLAUDE_CONFIG_DIR`
  * apuntando a un `~/.claude` de Linux que no contiene ese transcript: la ruta
  * traduce bien, el `stat` da bien, y la sesión simplemente no aparece. Un fallo
@@ -51,8 +52,13 @@ export function cuentaParaSesion<T extends { id: string; entorno?: Entorno }>(
     const activa = cuentas.find((c) => c.id === activaId) ?? null;
     return activa && esWsl(activa.entorno) ? null : activa;
   }
+  // Con N cuentas en la misma distro, la activa manda —igual que en Windows,
+  // donde cuál usar es decisión del usuario—. Sólo si la activa es de otro lado
+  // se cae a cualquiera de esa distro: es la única que puede llegar al
+  // transcript, y negarse teniendo una a mano sería peor que elegirla.
   const { distro } = sesion.entorno;
-  return cuentas.find((c) => c.entorno?.tipo === 'wsl' && c.entorno.distro === distro) ?? null;
+  const deLaDistro = cuentas.filter((c) => c.entorno?.tipo === 'wsl' && c.entorno.distro === distro);
+  return deLaDistro.find((c) => c.id === activaId) ?? deLaDistro[0] ?? null;
 }
 
 /**
@@ -237,6 +243,53 @@ export async function hayCliEn(distro: string): Promise<boolean> {
   })
     .then(({ stdout }) => decodificarSalidaWsl(Buffer.from(stdout)).trim().length > 0)
     .catch(() => false);
+}
+
+/**
+ * La carpeta de configuración de UNA cuenta adentro de la distro, en POSIX.
+ *
+ * Mismo modelo que en Windows (`createProfile`): cada cuenta es su propio
+ * CLAUDE_CONFIG_DIR, y lo único compartido es `projects/`. Así se pueden tener
+ * N cuentas en la misma distro —N logins, N consumos— viendo las mismas
+ * conversaciones.
+ *
+ * Va por id y no por nombre, igual que en Windows: el nombre se puede cambiar y
+ * mover la carpeta le haría perder el login a esa cuenta.
+ */
+export const configDirDeCuenta = (home: string, id: string): string => `${home}/.claude-monitor/${id}`;
+
+/** El pozo de la distro: su `~/.claude` de verdad, donde `claude` guarda todo
+ *  cuando corre sin CLAUDE_CONFIG_DIR. Es el `projects/` que comparten todas
+ *  las cuentas de esa distro, y la única raíz que hay que leer por distro. */
+export const potDe = (home: string): string => `${home}/.claude`;
+
+/**
+ * Deja lista la carpeta de una cuenta nueva ADENTRO de la distro: la crea y
+ * apunta su `projects` al pozo de esa distro.
+ *
+ * El enlace se hace ACÁ ADENTRO, con `ln -s` de Linux, y no desde Windows: un
+ * junction de Windows no se puede crear en ext4 ("Función incorrecta").
+ *
+ * Y por eso mismo la lista de sesiones NO se lee por este enlace. Medido en
+ * esta máquina: un symlink de Linux entre dos carpetas de ext4, visto desde
+ * Windows por la UNC, NO se atraviesa —`Test-Path` da True, `Get-ChildItem`
+ * devuelve el enlace mismo, y un nivel más adentro da "no existe"—. Del lado de
+ * Linux se sigue perfecto, que es lo único que necesita `claude`. Por eso
+ * `raices()` lee el POZO de la distro y no el `projects` de cada cuenta: por el
+ * enlace no vería nada.
+ *
+ * `mkdir -p` y el `ln -s` condicional lo hacen repetible sin efectos: volver a
+ * correrlo sobre una cuenta que ya existe no pisa nada.
+ */
+export async function prepararCuentaEnDistro(distro: string, home: string, id: string): Promise<void> {
+  const dir = shQuote(configDirDeCuenta(home, id));
+  const pozo = shQuote(`${potDe(home)}/projects`);
+  const script = `mkdir -p ${dir} && mkdir -p ${pozo} && [ -e ${dir}/projects ] || ln -s ${pozo} ${dir}/projects`;
+  await run('wsl.exe', ['-d', distro, '--exec', 'bash', '-lc', script], {
+    encoding: 'buffer',
+    timeout: TIMEOUT_WSL,
+    windowsHide: true
+  });
 }
 
 /** Enciende una distro a propósito. Es el ÚNICO lugar del proyecto que lo hace,

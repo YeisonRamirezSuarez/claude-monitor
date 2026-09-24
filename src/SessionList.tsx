@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { Entorno, SessionMeta, SessionTokens } from '../shared/types';
-import { etiquetaDeEntorno, formatExact, formatSize, formatTokens, motivoDeshabilitado, projectName, relativeDate } from './format';
+import type { Raiz, SessionMeta, SessionTokens } from '../shared/types';
+import {
+  etiquetaDeEntorno,
+  formatExact,
+  formatSize,
+  formatTokens,
+  motivoDeshabilitado,
+  projectName,
+  raicesMudas,
+  relativeDate
+} from './format';
 
 const SIN_CONSUMO: SessionTokens = {
   input: 0,
@@ -120,14 +129,15 @@ type Props = {
   tokensLoading: boolean;
   /** Qué decir cuando no hay ninguna sesión en ninguna cuenta. */
   emptyHint: string;
+  /** El estado de cada raíz de lectura. La lista se arma con las que se
+   *  pudieron leer, así que sin esto le faltan las sesiones de una distro
+   *  apagada y no lo dice: se ve igual que si nunca se hubiera trabajado ahí. */
+  raices: Raiz[];
+  onEncenderDistro: (distro: string) => void;
   /** La cuenta activa: la que va a poner los tokens al reanudar, sea o no la
    *  dueña de la sesión. */
   activeProfileName: string;
   canResume: boolean;
-  /** El entorno de la cuenta activa. Crear en terminal ya usa el lanzador de
-   *  WSL (Task 14): sólo "Nueva en Desktop…" se sigue deshabilitando con
-   *  motivo, porque Desktop no puede hospedar una sesión de la distro. */
-  activeProfileEntorno: Entorno;
   onResume: (id: string) => void;
   /** Reanuda la misma conversación en Claude Desktop: adopta el transcript
    *  del CLI por su id, no abre una sesión nueva. */
@@ -143,9 +153,10 @@ export default function SessionList({
   tokens,
   tokensLoading,
   emptyHint,
+  raices,
+  onEncenderDistro,
   activeProfileName,
   canResume,
-  activeProfileEntorno,
   onResume,
   onResumeInDesktop,
   onDelete,
@@ -187,14 +198,24 @@ export default function SessionList({
         <button className="primary" onClick={onNewSession}>
           Nueva en terminal…
         </button>
-        <button
-          disabled={activeProfileEntorno.tipo === 'wsl'}
-          title={motivoDeshabilitado(activeProfileEntorno)}
-          onClick={onNewSessionInDesktop}
-        >
-          Nueva en Desktop…
-        </button>
+        {/* Ya no se deshabilita para WSL: `desktop:openIn` traduce la carpeta
+            de la distro a UNC antes de dársela a Desktop, que sabe abrirla. */}
+        <button onClick={onNewSessionInDesktop}>Nueva en Desktop…</button>
       </div>
+
+      {/* Antes que la lista, no después: lo que hay que entender es que lo de
+          abajo está incompleto. Y con el botón de encender acá mismo — la
+          tarjeta de la cuenta ya lo tiene, pero está en la otra columna, lejos
+          de donde se nota que faltan sesiones. */}
+      {raicesMudas(raices).map((r) => (
+        <p key={r.distro} className="muted aviso-raiz">
+          {/* El motivo va primero y SIN `toLowerCase()`: los mensajes nombran
+              cosas propias —"Falta el CLI en Ubuntu", "La distro Ubuntu ya no
+              está"— y bajarlos a minúscula escribía "el cli en ubuntu". */}
+          {r.mensaje}: no se están mostrando las sesiones de {r.distro}.
+          {r.apagada && <button onClick={() => onEncenderDistro(r.distro)}>Encender {r.distro}</button>}
+        </p>
+      ))}
 
       <Metrics sessions={filtered} tokens={tokens} cargando={tokensLoading} />
 
@@ -246,13 +267,15 @@ export default function SessionList({
             {/* Sin `canResume`: eso mira el login del CLI, y el de Desktop es
                 otro —vive en su propia carpeta de datos—. Una cuenta sin el CLI
                 autorizado puede trabajar en Desktop igual. */}
+            {/* Ya no se deshabilita para WSL. Desktop sabe trabajar adentro
+                de una distro, y el handler le pasa la raíz de ESTA sesión como
+                CLAUDE_CONFIG_DIR —la UNC del `~/.claude` de la distro— en vez
+                del pozo de Windows, que era lo que hacía que no encontrara
+                nada. */}
             <button
-              disabled={s.entorno.tipo === 'wsl'}
               title={
-                s.entorno.tipo === 'wsl'
-                  ? motivoDeshabilitado(s.entorno)
-                  : `Seguir esta misma conversación en el Claude Desktop de "${activeProfileName}". ` +
-                    'Desktop adopta el transcript y abre el historial entero.'
+                `Seguir esta misma conversación en el Claude Desktop de "${activeProfileName}". ` +
+                'Desktop adopta el transcript y abre el historial entero.'
               }
               onClick={() => onResumeInDesktop(s.id)}
             >
@@ -262,7 +285,7 @@ export default function SessionList({
             <button
               className="danger"
               disabled={s.entorno.tipo === 'wsl'}
-              title={motivoDeshabilitado(s.entorno, 'borrar')}
+              title={motivoDeshabilitado(s.entorno)}
               onClick={() => setConfirmId(s.id)}
             >
               Borrar

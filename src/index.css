@@ -780,6 +780,22 @@ button.link.incierto {
   font-size: 11px;
 }
 
+/* El mismo aviso, pero arriba de la lista de sesiones: es ahí donde se nota que
+   faltan las de la distro, no en la tarjeta de la cuenta. */
+.aviso-raiz {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  color: var(--warn);
+}
+
+.aviso-raiz button {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
 /* Consumo que no salió de la API sino de la caché que dejó el CLI: se muestra,
    pero sin la misma voz que un número de ahora. */
 .usage.cacheada {

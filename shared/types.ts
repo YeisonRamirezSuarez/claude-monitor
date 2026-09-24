@@ -235,6 +235,19 @@ export type DesktopOpenResult = {
    *  las del panel, así que conviene avisar antes de que se confundan. */
   ajenas?: number;
   relevo?: string | null;
+  /**
+   * La carpeta de trabajo de una sesión de WSL, en forma UNC, para poder
+   * decírsela al usuario.
+   *
+   * Desktop importa la conversación entera y después no encuentra la carpeta:
+   * el `cwd` del transcript es POSIX (`/home/…`) y del lado de Windows no
+   * existe, así que muestra "La carpeta de trabajo ya no existe". No se puede
+   * evitar desde acá — el enlace `claude://resume?session=…` sólo acepta el
+   * `session`, verificado en el bundle de Desktop: su handler lee ese único
+   * parámetro y la carpeta la saca del `.jsonl`—. Lo que sí se puede es
+   * decirle al usuario exactamente qué pegar en "Elegir carpeta".
+   */
+  carpetaWsl?: string;
 };
 
 export type ProtocolStatus = { nuestro: boolean; empaquetada?: boolean };

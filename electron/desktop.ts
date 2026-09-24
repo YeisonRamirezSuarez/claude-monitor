@@ -317,11 +317,21 @@ export async function openDesktopForProfile(
   configDir: string,
   link?: string
 ): Promise<{ firstRun: boolean; yaAbierta?: boolean; ajenas?: number }> {
-  // Desktop es una app de Windows y su pestaña Code corre el binario Windows:
-  // no puede hospedar una sesión de la distro. Ver el spec de WSL, §7.
-  if (profile.entorno?.tipo === 'wsl') {
-    throw new Error(`Claude Desktop no puede abrir la cuenta de ${profile.entorno.distro}.`);
-  }
+  // Acá había un guard que se negaba a abrir Desktop para una cuenta de WSL,
+  // por el §7 del spec: "Desktop es una app de Windows y no puede hospedar una
+  // sesión de la distro". Eso YA NO ES CIERTO y bloqueaba justo a quien más
+  // necesita esta app: Desktop trae su propio selector con Local / Nube /
+  // Control remoto / WSL / SSH, y por WSL se elige la distro y después la
+  // carpeta. Verificado además en su bundle, que arma las rutas de la distro
+  // en forma UNC, igual que `posixAWindows` en `wsl.ts`.
+  //
+  // Y aunque no fuera cierto, este guard estaba en el lugar equivocado: lo que
+  // hace esta función es abrir la VENTANA de una cuenta —su `--user-data-dir`,
+  // su login—, que no tiene nada de Windows ni de la distro. El `configDir`
+  // que se le pasa es el POZO, no el de la cuenta (ver los llamadores), así
+  // que tampoco había nada que traducir. Lo único que seguía sin poder hacerse
+  // era ADOPTAR un transcript que vive adentro de la distro, y ese guard vive
+  // aparte, en `desktop:resume`.
 
   const exe = await findClaudeDesktop();
   if (!exe) {

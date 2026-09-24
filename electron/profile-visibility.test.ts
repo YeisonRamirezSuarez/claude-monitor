@@ -6,6 +6,13 @@ import type { Profile } from '../shared/types';
 const pool: Profile = { id: 'default', name: 'Cuenta principal', configDir: 'C:/Users/x/.claude', isDefault: true };
 const mia: Profile = { id: 'a1', name: 'super dev', configDir: 'C:/perfiles/a1', isDefault: false };
 const otra: Profile = { id: 'b2', name: 'personal', configDir: 'C:/perfiles/b2', isDefault: false };
+const enWsl: Profile = {
+  id: 'w1',
+  name: 'Pablo',
+  configDir: '\\\\wsl.localhost\\Ubuntu\\home\\pablo\\.claude',
+  isDefault: false,
+  entorno: { tipo: 'wsl', distro: 'Ubuntu', home: '/home/pablo' }
+};
 
 describe('visibleProfiles', () => {
   it('esconde el pozo cuando ya hay cuentas propias', () => {
@@ -14,6 +21,17 @@ describe('visibleProfiles', () => {
 
   it('lo muestra si no hay ninguna propia: si no, no quedaría con qué trabajar', () => {
     expect(visibleProfiles([pool])).toEqual([pool]);
+  });
+
+  // El caso de quien tiene el CLI sólo adentro de la distro y usa Desktop en
+  // Windows: el pozo igual lista sus sesiones, y sin esta cuenta no habría
+  // ninguna con la que reanudarlas.
+  it('lo muestra si todas las propias viven en una distro', () => {
+    expect(visibleProfiles([pool, enWsl])).toEqual([pool, enWsl]);
+  });
+
+  it('lo esconde apenas hay una propia de Windows, aunque también haya de WSL', () => {
+    expect(visibleProfiles([pool, enWsl, mia])).toEqual([enWsl, mia]);
   });
 });
 

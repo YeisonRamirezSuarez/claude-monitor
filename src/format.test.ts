@@ -6,6 +6,7 @@ import {
   hablarDeChrome,
   motivoDeshabilitado,
   procedenciaDeConsumo,
+  raicesMudas,
   seLeMiroElDisco,
   textoDeMotivo
 } from './format';
@@ -27,20 +28,19 @@ describe('etiquetaDeEntorno', () => {
 });
 
 describe('motivoDeshabilitado', () => {
-  it('motivo por defecto: Desktop no puede hospedar una sesión de la distro', () => {
+  // Quedó uno solo: borrar. Los de Desktop se fueron cuando reanudar y crear
+  // en Desktop empezaron a andar con una cuenta de la distro.
+  it('borrar es una decisión de producto, no una imposibilidad', () => {
     expect(motivoDeshabilitado({ tipo: 'wsl', distro: 'Ubuntu', home: '/home/v' })).toBe(
-      'Claude Desktop no puede abrir sesiones de Ubuntu'
-    );
-  });
-  it('borrar tiene su propio motivo: no es que Desktop no pueda, es que no está habilitado todavía', () => {
-    expect(motivoDeshabilitado({ tipo: 'wsl', distro: 'Ubuntu', home: '/home/v' }, 'borrar')).toBe(
       'Borrar sesiones de Ubuntu no está disponible todavía'
     );
   });
+
   it('en Windows no hay motivo: el botón anda', () => {
     expect(motivoDeshabilitado({ tipo: 'windows' })).toBe('');
   });
 });
+;
 
 describe('seLeMiroElDisco', () => {
   it('una cuenta de Windows siempre se mira', () => {
@@ -131,5 +131,53 @@ describe('procedenciaDeConsumo', () => {
 
   it('un motivo que la interfaz no conoce se muestra igual, no desaparece', () => {
     expect(textoDeMotivo('motivo-nuevo')).toBe('motivo-nuevo');
+  });
+});
+
+describe('raicesMudas', () => {
+  const pozo: Raiz = { configDir: 'C:/Users/x/.claude', entorno: { tipo: 'windows' }, estado: { tipo: 'ok' } };
+  const wsl = (estado: Raiz['estado']): Raiz => ({
+    configDir: '\\wsl.localhost\Ubuntu\home\p\.claude',
+    entorno: { tipo: 'wsl', distro: 'Ubuntu', home: '/home/p' },
+    estado
+  });
+
+  it('no dice nada cuando todo se pudo leer', () => {
+    expect(raicesMudas([pozo, wsl({ tipo: 'ok' })])).toEqual([]);
+  });
+
+  // El caso real: WSL se apaga solo por inactividad, así que la lista se queda
+  // sin las sesiones de Ubuntu y con todas las de Windows.
+  it('delata la distro apagada y ofrece encenderla', () => {
+    expect(raicesMudas([pozo, wsl({ tipo: 'apagada', mensaje: 'Distro apagada' })])).toEqual([
+      { distro: 'Ubuntu', mensaje: 'Distro apagada', apagada: true }
+    ]);
+  });
+
+  it('también delata las que no se arreglan encendiendo', () => {
+    expect(raicesMudas([wsl({ tipo: 'sin-config', mensaje: 'No hay Claude Code configurado ahí' })])).toEqual([
+      { distro: 'Ubuntu', mensaje: 'No hay Claude Code configurado ahí', apagada: false }
+    ]);
+  });
+
+  it('el pozo de Windows nunca entra: se lee siempre', () => {
+    expect(raicesMudas([pozo])).toEqual([]);
+  });
+
+  // Dos cuentas en la misma distro miran el mismo ~/.claude: el aviso es de la
+  // distro, no de la cuenta, y repetirlo sería además dos `key` de React iguales.
+  it('una sola vez por distro aunque haya dos raíces de la misma', () => {
+    const apagada = wsl({ tipo: 'apagada', mensaje: 'Distro apagada' });
+    expect(raicesMudas([apagada, apagada, pozo])).toEqual([
+      { distro: 'Ubuntu', mensaje: 'Distro apagada', apagada: true }
+    ]);
+  });
+
+  // El mensaje se muestra tal cual: bajarlo a minúscula escribía "el cli en
+  // ubuntu" y "la distro ubuntu ya no está".
+  it('no toca el texto del mensaje: adentro hay nombres propios', () => {
+    expect(raicesMudas([wsl({ tipo: 'sin-cli', mensaje: 'Falta el CLI en Ubuntu' })])[0].mensaje).toBe(
+      'Falta el CLI en Ubuntu'
+    );
   });
 });

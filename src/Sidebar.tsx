@@ -4,7 +4,6 @@ import AccountIcon from './AccountIcon';
 import {
   estadoDeSesion,
   hablarDeChrome,
-  motivoDeshabilitado,
   procedenciaDeConsumo,
   projectName,
   relativeDate,
@@ -392,13 +391,6 @@ export default function Sidebar(props: Props) {
   // La cuenta que se está por quitar: lo que se borra —y lo que no— depende de
   // dónde vive su carpeta. Ver el texto de la confirmación.
   const aBorrar = profileList?.profiles.find((p) => p.id === confirmDelete) ?? null;
-  // El entorno de la cuenta activa, que es lo que decide si "Desktop" del
-  // desplegable del "+" va deshabilitado: Desktop es una app de Windows y no
-  // puede hospedar una sesión de la distro (§7). Crear en terminal sí anda con
-  // el lanzador de WSL (Task 14). Windows por defecto si no hay cuenta activa,
-  // igual que en SessionList.
-  const activeProfileEntorno: Entorno = active?.entorno ?? { tipo: 'windows' };
-
   // `sessions` llega ordenada por mtime descendente desde electron/sessions.ts,
   // así que group[0] es la sesión más reciente del proyecto.
   const projects = useMemo(() => {
@@ -576,10 +568,10 @@ export default function Sidebar(props: Props) {
                 >
                   Terminal
                 </button>
+                {/* Igual que en SessionList: la carpeta de la distro se
+                    traduce a UNC en `desktop:openIn`. */}
                 <button
                   className="link"
-                  disabled={activeProfileEntorno.tipo === 'wsl'}
-                  title={motivoDeshabilitado(activeProfileEntorno)}
                   onClick={() => {
                     setNuevoEn(null);
                     props.onNewSessionInDesktop(group[0].cwd);

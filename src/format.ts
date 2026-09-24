@@ -52,21 +52,21 @@ export const hablarDeChrome = (entorno: Entorno | undefined): boolean => entorno
  *  mayoría, y marcarlas todas convierte la marca en ruido. */
 export const etiquetaDeEntorno = (e: Entorno): string => (e.tipo === 'wsl' ? e.distro : '');
 
-/** Por qué una acción sigue deshabilitada para una cuenta de WSL. Un botón
- *  deshabilitado sin motivo se lee como un bug; con motivo, como una
- *  frontera. Desde la Task 14, reanudar y crear en terminal ya funcionan
- *  desde el panel: lo que queda deshabilitado tiene dos motivos distintos,
- *  no uno solo:
- *  - Desktop es una app de Windows y no puede hospedar una sesión de la
- *    distro (permanente, spec §7).
- *  - Borrar sesiones de WSL no está habilitado en esta rebanada (decisión de
- *    producto, spec §9 — no una imposibilidad técnica). */
-export const motivoDeshabilitado = (e: Entorno, contexto: 'desktop' | 'borrar' = 'desktop'): string => {
-  if (e.tipo !== 'wsl') return '';
-  return contexto === 'borrar'
-    ? `Borrar sesiones de ${e.distro} no está disponible todavía`
-    : `Claude Desktop no puede abrir sesiones de ${e.distro}`;
-};
+/**
+ * Por qué "Borrar" sigue deshabilitado en una sesión de la distro. Un botón
+ * deshabilitado sin motivo se lee como un bug; con motivo, como una frontera.
+ *
+ * Es el ÚNICO que queda. Antes también cubría los botones de Desktop, sobre la
+ * premisa de que "Desktop es una app de Windows y no puede hospedar una sesión
+ * de la distro" — falsa: Desktop tiene su propio selector Local / Nube /
+ * Control remoto / WSL / SSH. Reanudar y crear en Desktop ya andan con una
+ * cuenta de la distro, así que esa rama se fue con ellos.
+ *
+ * Borrar no es una imposibilidad técnica —por la UNC funcionaría— sino una
+ * decisión de producto: spec §9.
+ */
+export const motivoDeshabilitado = (e: Entorno): string =>
+  e.tipo === 'wsl' ? `Borrar sesiones de ${e.distro} no está disponible todavía` : '';
 
 const RELATIVE = new Intl.RelativeTimeFormat('es', { numeric: 'auto' });
 const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
@@ -146,4 +146,34 @@ export function projectName(cwd: string): string {
 /** Las sesiones recién creadas pesan menos de 1 KB: redondearlas a "0 KB" se lee como un error. */
 export function formatSize(bytes: number): string {
   return bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024)} KB`;
+}
+
+/**
+ * Las raíces cuyas sesiones NO están en la lista, y por qué.
+ *
+ * Existe porque la lista de sesiones no puede quedarse muda cuando le faltan
+ * las de una distro. El pozo de Windows se lee siempre, así que sus sesiones
+ * están siempre; las de una distro apagada no, y la lista se ve exactamente
+ * igual que si esa persona nunca hubiera trabajado adentro de Ubuntu. Es el
+ * síntoma de "no carga el historial de WSL, el de Windows sí": la explicación
+ * existía sólo en la tarjeta de la cuenta, en la barra lateral, a un panel de
+ * distancia de donde se nota que faltan.
+ *
+ * Devuelve la distro además del mensaje para poder ofrecer el botón de
+ * encender ahí mismo: decir "Distro apagada" sin la salida al lado obliga a ir
+ * a buscarla.
+ */
+export function raicesMudas(raices: Raiz[]): Array<{ distro: string; mensaje: string; apagada: boolean }> {
+  const vistas = new Set<string>();
+  return raices
+    .filter((r) => r.entorno.tipo === 'wsl' && r.estado.tipo !== 'ok')
+    .map((r) => ({
+      distro: (r.entorno as Extract<Entorno, { tipo: 'wsl' }>).distro,
+      mensaje: r.estado.tipo !== 'ok' ? r.estado.mensaje : '',
+      apagada: r.estado.tipo === 'apagada'
+    }))
+    // Una por distro, no una por cuenta: dos cuentas en la misma distro miran
+    // el mismo `~/.claude`, así que dirían dos veces lo mismo — y con la misma
+    // `key` de React, que además es un bug de renderizado.
+    .filter(({ distro }) => !vistas.has(distro) && vistas.add(distro));
 }

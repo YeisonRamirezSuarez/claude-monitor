@@ -1,6 +1,6 @@
 // electron/transcript.test.ts
 import { describe, it, expect } from 'vitest';
-import { parseTranscriptLines } from './transcript';
+import { parseTranscriptLines, reescribirCwd } from './transcript';
 
 const linea = (o: unknown) => JSON.stringify(o);
 
@@ -54,5 +54,51 @@ describe('parseTranscriptLines', () => {
 
   it('acepta contenido como string suelto', () => {
     expect(parseTranscriptLines([usuario('hola')]).messages[0].text).toBe('hola');
+  });
+});
+
+describe('reescribirCwd', () => {
+  const posix = '/home/pablorm/Proyectos/wposs/new6260';
+  const unc = '\\wsl.localhost\Ubuntu\home\pablorm\Proyectos\wposs\new6260';
+
+  it('cambia el valor de la clave cwd', () => {
+    const linea = `{"type":"user","cwd":"${posix}","message":{"content":"hola"}}`;
+    const salida = reescribirCwd(linea, posix, unc);
+    expect(JSON.parse(salida).cwd).toBe(unc);
+  });
+
+  it('lo cambia en TODAS las líneas: el cwd va en cada entrada', () => {
+    const doc = [
+      `{"cwd":"${posix}","type":"user"}`,
+      `{"cwd":"${posix}","type":"assistant"}`
+    ].join(String.fromCharCode(10));
+    const salida = reescribirCwd(doc, posix, unc);
+    expect(salida.split(String.fromCharCode(10)).every((l) => JSON.parse(l).cwd === unc)).toBe(true);
+  });
+
+  // Lo que NO tiene que pasar: si alguien pegó la ruta adentro de un mensaje,
+  // cambiarla ahí sería reescribir lo que se dijo.
+  it('no toca la ruta cuando aparece adentro de un mensaje', () => {
+    const linea = `{"cwd":"${posix}","message":{"content":"corré esto en ${posix} y avisá"}}`;
+    const salida = reescribirCwd(linea, posix, unc);
+    const entrada = JSON.parse(salida);
+    expect(entrada.cwd).toBe(unc);
+    expect(entrada.message.content).toContain(posix);
+  });
+
+  it('aguanta el espaciado del JSON con formato', () => {
+    const linea = `{"cwd" : "${posix}"}`;
+    expect(JSON.parse(reescribirCwd(linea, posix, unc)).cwd).toBe(unc);
+  });
+
+  it('es idempotente: pasarlo dos veces no rompe nada', () => {
+    const linea = `{"cwd":"${posix}"}`;
+    const una = reescribirCwd(linea, posix, unc);
+    expect(reescribirCwd(una, posix, unc)).toBe(una);
+  });
+
+  it('no toca un transcript de otra carpeta', () => {
+    const linea = `{"cwd":"/home/otro/proyecto"}`;
+    expect(reescribirCwd(linea, posix, unc)).toBe(linea);
   });
 });

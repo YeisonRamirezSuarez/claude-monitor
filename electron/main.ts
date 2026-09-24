@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
-import { readFile, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { copyFile, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ensureHostScript } from './chrome-host';
 import { chromeStatus, closeChromeForProfile, openChromeForProfile, setupBrowserDone } from './chrome-launch';
@@ -29,9 +30,17 @@ import {
 import { countCompactions, deleteSession, listSessions, mezclarRaices } from './sessions';
 import { openTerminal } from './terminal';
 import { tokensFor } from './tokens';
-import { readTranscript } from './transcript';
+import { dondeEstaAbierta, quienLaTiene } from './liveness';
+import { readTranscript, reescribirCwd } from './transcript';
 import { readUsage } from './usage';
-import { cuentaParaSesion, distrosCorriendo, distrosInstaladas, encenderDistro, esWsl } from './wsl';
+import {
+  cuentaParaSesion,
+  distrosCorriendo,
+  distrosInstaladas,
+  encenderDistro,
+  esWsl,
+  posixAWindows
+} from './wsl';
 import type { Profile, ProfileWithStatus, Raiz, Result, SessionMeta } from '../shared/types';
 
 /** Envuelve un handler para que el renderer nunca reciba una excepción cruda. */
@@ -60,6 +69,40 @@ async function findSession(id: string) {
     if (session) return { session };
   }
   throw new Error(`Sesión no encontrada: ${id}`);
+}
+
+/**
+ * Deja el `cwd` del transcript apuntando a la carpeta como la ve Windows, para
+ * que Claude Desktop la encuentre. Ver `reescribirCwd`.
+ *
+ * Escribe a un temporal y renombra: un corte a mitad de la escritura sobre el
+ * archivo original dejaría la conversación truncada, y es la conversación del
+ * usuario. `rename` en el mismo directorio es atómico.
+ *
+ * Y deja UNA copia intacta la primera vez, con la ruta POSIX original. La
+ * primera nada más: en la segunda pasada el original ya está en UNC y
+ * pisarla borraría la única versión con la ruta de Linux.
+ *
+ * Nada de esto es fatal: si el transcript no se puede tocar —permisos, la
+ * distro que se apagó justo— igual se abre Desktop, que como mucho va a pedir
+ * la carpeta. Perder la conversación por no poder editar un campo sería la
+ * peor de las dos.
+ */
+async function apuntarCwdAWindows(ruta: string, viejo: string, nuevo: string): Promise<void> {
+  try {
+    const contenido = await readFile(ruta, 'utf8');
+    const cambiado = reescribirCwd(contenido, viejo, nuevo);
+    if (cambiado === contenido) return;
+    await copyFile(ruta, `${ruta}.pre-unc`, constants.COPYFILE_EXCL).catch(() => {});
+    await writeFile(`${ruta}.tmp`, cambiado, 'utf8');
+    await rename(`${ruta}.tmp`, ruta);
+    anotar('desktop: cwd del transcript apuntado a Windows', { ruta, viejo, nuevo });
+  } catch (error) {
+    anotar('desktop: no se pudo apuntar el cwd, Desktop va a pedir la carpeta', {
+      ruta,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
 }
 
 /** La ruta del transcript de una sesión, desde la raíz que la contiene. Antes
@@ -329,6 +372,17 @@ function registerHandlers() {
       if (picked.canceled || !picked.filePaths[0]) return null;
       dir = picked.filePaths[0];
     }
+    // La carpeta de un proyecto de la distro llega POSIX (`/home/…`), que del
+    // lado de Windows no existe: sin traducir, el `stat` de abajo fallaría y
+    // Desktop tampoco la encontraría. En UNC sí: verificado en el bundle de
+    // Desktop, que arma las rutas de la distro exactamente en esa forma.
+    //
+    // La distro sale de la cuenta activa, que es la misma con la que la
+    // interfaz decide mostrar el botón. Sin cuenta WSL activa no hay de dónde
+    // sacarla y la ruta se deja como vino: el `stat` falla y lo dice.
+    if (dir.startsWith('/') && profile.entorno?.tipo === 'wsl') {
+      dir = posixAWindows(profile.entorno.distro, dir);
+    }
     // Una carpeta que ya no existe abriría Desktop igual, en cualquier lado y
     // sin decir por qué: pasa seguido con un proyecto viejo movido o borrado.
     const destino = await stat(dir).catch(() => null);
@@ -349,16 +403,56 @@ function registerHandlers() {
   // sólo muestra un aviso suyo y la ventana queda abierta sin explicar nada.
   handle('desktop:resume', async (id: string) => {
     const { session } = await findSession(id);
-    // El guard vive acá y no sólo en el botón deshabilitado de la lista: la
-    // frontera es el handler, la UI es presentación. Ver §7 del spec — Desktop
-    // es una app de Windows y no puede hospedar una sesión de la distro.
-    if (session.entorno.tipo === 'wsl') {
+    // Acá se negaba a abrir en Desktop cualquier sesión de una distro. El motivo
+    // que se daba —"Desktop es una app de Windows"— es falso: Desktop tiene su
+    // propio selector Local / Nube / Control remoto / WSL / SSH.
+    //
+    // Lo que faltaba era decirle DÓNDE buscar el transcript. Desktop lo resuelve
+    // por su `CLAUDE_CONFIG_DIR`, y acá se le pasaba siempre el pozo de Windows,
+    // que por supuesto no contiene una conversación de la distro. Ahora se le
+    // pasa la raíz de la sesión: para una de WSL es la UNC del `~/.claude` de
+    // adentro de la distro, y sobre esa UNC `node:fs` —y Desktop, que es
+    // Electron— lee y escribe. Reanudar es una escritura (Desktop reescribe el
+    // `.jsonl` al importarlo), y por eso importa que sea un directorio de
+    // verdad y no un enlace: el `projects` del pozo lo es. Ver el
+    // `PlantDetectedError` que describe el comentario grande de `desktop.ts`.
+    // La carpeta de trabajo, dejada como Desktop la puede encontrar.
+    //
+    // Desktop la saca del `cwd` del transcript y no hay forma de pasársela por
+    // el enlace. La de una sesión de la distro es POSIX, del lado de Windows no
+    // existe, y el resultado era: la conversación se abría entera y arriba
+    // aparecía "La carpeta de trabajo ya no existe". De paso, como Desktop
+    // agrupa los proyectos por esa cadena, la misma carpeta figuraba dos veces
+    // en su barra lateral —una por el `/home/…` y otra por la UNC que el
+    // usuario elegía a mano—.
+    // Antes que nada: si otro Claude Code la tiene abierta, Desktop se va a
+    // negar a adoptarla —`liveOwnershipRefusal` en su bundle— y lo va a hacer
+    // callado: abre la ventana y la conversación llega hasta donde estaba, sin
+    // lo último. Ese era el "no me trae lo último".
+    //
+    // Negarse no es opcional y no es nuestro: dos procesos escribiendo el
+    // mismo `.jsonl` lo rompen. Lo que sí es nuestro es DECIRLO, y decir dónde
+    // cerrarla. Ver `liveness.ts`.
+    const dueno = await quienLaTiene(session.raiz, session.id, session.entorno);
+    if (dueno) {
       throw new Error(
-        `Claude Desktop no puede abrir sesiones de ${session.entorno.distro}: es una app de Windows y el transcript vive adentro de la distro. Reanudala en terminal.`
+        `Esta conversación la tiene abierta ${dondeEstaAbierta(dueno)} (proceso ${dueno.pid})` +
+          `${dueno.cwd ? ` en ${dueno.cwd}` : ''}. Claude Desktop no adopta una sesión que otro ` +
+          'proceso está escribiendo —se la llevaría a medias y sin lo último—. Cerrala ahí y volvé ' +
+          'a tocar el botón.'
       );
     }
+
+    const carpetaWsl =
+      session.entorno.tipo === 'wsl' ? posixAWindows(session.entorno.distro, session.cwd) : null;
+    if (carpetaWsl) await apuntarCwdAWindows(rutaDe(session), session.cwd, carpetaWsl);
+
     const { profile, relevo } = await profileForWork();
-    return { ...(await openDesktopForProfile(profile, await getSharedRoot(), resumeLink(session.id))), relevo };
+    return {
+      ...(await openDesktopForProfile(profile, session.raiz, resumeLink(session.id))),
+      relevo,
+      carpetaWsl: carpetaWsl ?? undefined
+    };
   });
 
   // El protocolo `claude://`, que es lo que decide si Desktop hace el login de

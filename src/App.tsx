@@ -260,7 +260,14 @@ export default function App() {
           ? 'Se abrió un Claude Desktop propio para esta cuenta, sin sesión iniciada. Iniciala ahí adentro, con Google o con correo. Si entrás con Google se va a abrir tu navegador de siempre — es así en Windows — y de ahí volvés solo. Si al volver no ves la ventana de Desktop, tocá el botón de nuevo: la trae de vuelta, aunque puede que tengas que repetir el login.'
           : 'Claude Desktop está importando esa conversación, con todo el historial. Al importarla reescribe el ' +
             '.jsonl para sacarle los bloques de razonamiento y deja una copia .pre-import al lado; podés seguir ' +
-            'reanudándola desde la terminal igual.'
+            'reanudándola desde la terminal igual.',
+        // Una sesión de la distro trae un `cwd` POSIX, y Desktop lo busca del
+        // lado de Windows: importa la conversación entera y después dice "La
+        // carpeta de trabajo ya no existe". No hay forma de evitarlo desde
+        // acá —`claude://resume` sólo acepta `session`—, así que se avisa
+        // antes y se le da la ruta ya traducida para pegar.
+        result.data.carpetaWsl &&
+          `La carpeta de trabajo quedó apuntada a ${result.data.carpetaWsl}, que es la misma de la distro pero como la ve Windows: sin eso Desktop decía "La carpeta de trabajo ya no existe". Queda una copia .pre-unc del transcript al lado, con la ruta original. Y si esta conversación está abierta en OTRO Desktop, cerrala ahí primero: Desktop no adopta una sesión que otro proceso tiene en uso.`
       ]
         .filter(Boolean)
         .join(' ')
@@ -451,9 +458,10 @@ export default function App() {
             tokens={tokens}
             tokensLoading={tokensLoading}
             emptyHint={emptyHint}
+            raices={raices}
+            onEncenderDistro={encenderDistro}
             activeProfileName={activeProfile?.name ?? ''}
             canResume={Boolean(activeProfile?.authenticated)}
-            activeProfileEntorno={activeProfile?.entorno ?? { tipo: 'windows' }}
             onResume={resume}
             onResumeInDesktop={resumeInDesktop}
             onDelete={(id) => run(() => window.claudeMonitor.deleteSession(id))}

@@ -187,7 +187,7 @@ async function abrirEnWsl(
   label: string,
   entorno: Extract<Entorno, { tipo: 'wsl' }>
 ): Promise<void> {
-  const { distro, home } = entorno;
+  const { distro } = entorno;
 
   // El `cwd` de una sesión WSL viene POSIX; el del diálogo de carpeta de
   // Windows viene en forma Windows y hay que traducirlo. Si no es ninguna de
@@ -214,7 +214,15 @@ async function abrirEnWsl(
     throw new Error(`No se puede abrir la terminal: la carpeta ya no existe (${cwdPosix}).`);
   }
 
-  const args = argsDeLanzamiento(distro, cwdPosix, `${home}/.claude`, command, label);
+  // El CLAUDE_CONFIG_DIR es el de ESTA cuenta, no el pozo de la distro. Antes
+  // acá estaba escrito `${home}/.claude` fijo, y con eso todas las cuentas de
+  // una distro entraban con las mismas credenciales: agregar una segunda no
+  // servía de nada. `configDir` llega como UNC —así lo leen `credentials.ts` y
+  // compañía— y adentro de la distro tiene que ser POSIX, que es justo lo que
+  // `windowsAPosix` sabe hacer. Una ruta que ya venga POSIX se deja pasar, para
+  // una cuenta vieja de las que adoptaban el pozo entero.
+  const configDirPosix = configDir.startsWith('/') ? configDir : windowsAPosix(distro, configDir);
+  const args = argsDeLanzamiento(distro, cwdPosix, configDirPosix, command, label);
   const options: SpawnOptions = { env: sessionEnv(process.env, configDir), detached: true, stdio: 'ignore' };
   const title = tabTitle(label);
 

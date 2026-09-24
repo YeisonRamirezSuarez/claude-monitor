@@ -3,6 +3,7 @@ import {
   TIMEOUT_WSL,
   argsDeConsulta,
   argsDeLanzamiento,
+  configDirDeCuenta,
   configDirUNC,
   cuentaParaSesion,
   decodificarSalidaWsl,
@@ -10,6 +11,7 @@ import {
   parseDistros,
   estadoDeRaiz,
   posixAWindows,
+  potDe,
   sePuedeLeer,
   windowsAPosix
 } from './wsl';
@@ -270,10 +272,32 @@ describe('cuentaParaSesion', () => {
     expect(cuentaParaSesion(s, cuentas, 'w1')).toBeNull();
   });
 
+  // N cuentas en la misma distro: mismo modelo que en Windows, donde cuál usar
+  // es decisión del usuario. La activa manda; si es de otro lado, cualquiera de
+  // esa distro sirve porque son las únicas que llegan al transcript.
+  it('con varias cuentas en la distro gana la activa', () => {
+    const dos = [
+      { id: 'w1', entorno: { tipo: 'wsl', distro: 'Ubuntu', home: '/h' } },
+      { id: 'w2', entorno: { tipo: 'wsl', distro: 'Ubuntu', home: '/h' } }
+    ] as any;
+    const s = { entorno: { tipo: 'wsl', distro: 'Ubuntu', home: '/h' } } as any;
+    expect(cuentaParaSesion(s, dos, 'w2')?.id).toBe('w2');
+  });
+
+  it('si la activa es de otro lado, sirve cualquiera de esa distro', () => {
+    const dos = [
+      { id: 'w1', entorno: { tipo: 'wsl', distro: 'Ubuntu', home: '/h' } },
+      { id: 'w2', entorno: { tipo: 'wsl', distro: 'Ubuntu', home: '/h' } }
+    ] as any;
+    const s = { entorno: { tipo: 'wsl', distro: 'Ubuntu', home: '/h' } } as any;
+    expect(cuentaParaSesion(s, dos, 'default')?.id).toBe('w1');
+  });
+
   it('una sesión de Windows con la cuenta activa en WSL no se abre con ella', () => {
-    // La dirección espejo, y es alcanzable: `visibleProfiles` oculta la cuenta
-    // `default` en cuanto hay una propia, así que quien tiene una sola cuenta
-    // propia y es de WSL la tiene activa. Abrir ahí una sesión de Windows
+    // La dirección espejo, y es alcanzable: alcanza con tener activa una cuenta
+    // de WSL —lo normal mientras se trabaja adentro de la distro— y tocar una
+    // sesión de Windows, que siempre está en la lista. Abrir ahí una sesión de
+    // Windows
     // arrancaría `claude` adentro de la distro con un CLAUDE_CONFIG_DIR que no
     // contiene ese transcript: la sesión no aparece y nadie explica por qué.
     const s = { entorno: { tipo: 'windows' } } as any;
@@ -329,5 +353,28 @@ describe('argsDeLanzamiento', () => {
 
   it('la ruta del config va en POSIX, no en UNC', () => {
     expect(args[args.length - 1]).not.toContain('wsl.localhost');
+  });
+});
+
+describe('carpetas por cuenta adentro de la distro', () => {
+  // Mismo modelo que en Windows: cada cuenta su CLAUDE_CONFIG_DIR, `projects`
+  // compartido. Sin esto dos cuentas de una distro eran la misma.
+  it('cada cuenta tiene la suya, por id y no por nombre', () => {
+    expect(configDirDeCuenta('/home/pablo', 'aaa11111')).toBe('/home/pablo/.claude-monitor/aaa11111');
+    expect(configDirDeCuenta('/home/pablo', 'bbb22222')).not.toBe(configDirDeCuenta('/home/pablo', 'aaa11111'));
+  });
+
+  it('el pozo de la distro sigue siendo su ~/.claude: es la única raíz que se lee', () => {
+    expect(potDe('/home/pablo')).toBe('/home/pablo/.claude');
+  });
+
+  // La ida y vuelta importa: el configDir se guarda en UNC (lo leen
+  // credentials/usage/sessions con node:fs) y `abrirEnWsl` lo necesita POSIX
+  // para el `export CLAUDE_CONFIG_DIR` de adentro de la distro.
+  it('UNC y POSIX son la misma carpeta ida y vuelta', () => {
+    const posix = configDirDeCuenta('/home/pablo', 'aaa11111');
+    const unc = posixAWindows('Ubuntu', posix);
+    expect(unc).toBe('\\\\wsl.localhost\\Ubuntu\\home\\pablo\\.claude-monitor\\aaa11111');
+    expect(windowsAPosix('Ubuntu', unc)).toBe(posix);
   });
 });
