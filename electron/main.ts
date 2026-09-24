@@ -1,6 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
-import { constants } from 'node:fs';
-import { copyFile, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ensureHostScript } from './chrome-host';
 import { chromeStatus, closeChromeForProfile, openChromeForProfile, setupBrowserDone } from './chrome-launch';
@@ -31,7 +30,10 @@ import { countCompactions, deleteSession, listSessions, mezclarRaices } from './
 import { openTerminal } from './terminal';
 import { tokensFor } from './tokens';
 import { dondeEstaAbierta, quienLaTiene } from './liveness';
-import { readTranscript, reescribirCwd } from './transcript';
+import { agentesVivos, conversacionDe, equipoDe } from './oficina';
+import { leerNombres, nombrar, type Nombre } from './nombres';
+import { detenerOficina, urlOficina } from './pixel-agents';
+import { readTranscript } from './transcript';
 import { readUsage } from './usage';
 import {
   cuentaParaSesion,
@@ -41,7 +43,7 @@ import {
   esWsl,
   posixAWindows
 } from './wsl';
-import type { Profile, ProfileWithStatus, Raiz, Result, SessionMeta } from '../shared/types';
+import type { Profile, ProfileWithStatus, Raiz, Result, SessionMeta, SubagenteOficina } from '../shared/types';
 
 /** Envuelve un handler para que el renderer nunca reciba una excepción cruda. */
 function handle<T>(channel: string, fn: (...args: any[]) => Promise<T>) {
@@ -71,43 +73,66 @@ async function findSession(id: string) {
   throw new Error(`Sesión no encontrada: ${id}`);
 }
 
-/**
- * Deja el `cwd` del transcript apuntando a la carpeta como la ve Windows, para
- * que Claude Desktop la encuentre. Ver `reescribirCwd`.
- *
- * Escribe a un temporal y renombra: un corte a mitad de la escritura sobre el
- * archivo original dejaría la conversación truncada, y es la conversación del
- * usuario. `rename` en el mismo directorio es atómico.
- *
- * Y deja UNA copia intacta la primera vez, con la ruta POSIX original. La
- * primera nada más: en la segunda pasada el original ya está en UNC y
- * pisarla borraría la única versión con la ruta de Linux.
- *
- * Nada de esto es fatal: si el transcript no se puede tocar —permisos, la
- * distro que se apagó justo— igual se abre Desktop, que como mucho va a pedir
- * la carpeta. Perder la conversación por no poder editar un campo sería la
- * peor de las dos.
- */
-async function apuntarCwdAWindows(ruta: string, viejo: string, nuevo: string): Promise<void> {
-  try {
-    const contenido = await readFile(ruta, 'utf8');
-    const cambiado = reescribirCwd(contenido, viejo, nuevo);
-    if (cambiado === contenido) return;
-    await copyFile(ruta, `${ruta}.pre-unc`, constants.COPYFILE_EXCL).catch(() => {});
-    await writeFile(`${ruta}.tmp`, cambiado, 'utf8');
-    await rename(`${ruta}.tmp`, ruta);
-    anotar('desktop: cwd del transcript apuntado a Windows', { ruta, viejo, nuevo });
-  } catch (error) {
-    anotar('desktop: no se pudo apuntar el cwd, Desktop va a pedir la carpeta', {
-      ruta,
-      error: error instanceof Error ? error.message : String(error)
-    });
-  }
-}
-
 /** La ruta del transcript de una sesión, desde la raíz que la contiene. Antes
  *  se armaba con `sharedRoot`, que asumía una sola. */
 const rutaDe = (s: SessionMeta) => join(s.raiz, 'projects', s.projectSlug, `${s.id}.jsonl`);
+
+/** sessionId -> transcript, para el panel de conversación de la oficina. */
+const rutasConversacion = new Map<string, string>();
+
+async function rutaConversacion(id: string): Promise<string> {
+  let ruta = rutasConversacion.get(id);
+  if (!ruta) {
+    const { session } = await findSession(id);
+    ruta = rutaDe(session);
+    rutasConversacion.set(id, ruta);
+  }
+  return ruta;
+}
+
+/** El nombre que se muestra: el que le puso el usuario, o el de siempre. */
+const conNombre = (n: Nombre | undefined, porDefecto: string) => ({
+  nombre: n?.nombre || porDefecto,
+  nombrePropio: n?.nombre ?? '',
+  nota: n?.nota ?? ''
+});
+
+const ponerNombre = (s: SubagenteOficina, n: Nombre | undefined): SubagenteOficina => ({
+  ...s,
+  nombrePropio: n?.nombre ?? '',
+  nota: n?.nota ?? ''
+});
+
+/**
+ * Dónde puede estar anotada como viva una sesión: en el `sessions/` de la raíz
+ * y en el de cada cuenta que comparte ese `projects/`. Las de Windows lo
+ * comparten todas entre sí (junction al pozo); las de una distro, las de ESA
+ * distro (symlink al pozo de la distro). Ver `quienLaTiene`.
+ */
+function registrosDe(session: SessionMeta, profiles: Profile[]): string[] {
+  const comparten = profiles.filter((p) =>
+    session.entorno.tipo === 'wsl'
+      ? p.entorno?.tipo === 'wsl' && p.entorno.distro === session.entorno.distro
+      : !esWsl(p.entorno)
+  );
+  return [session.raiz, ...comparten.map((p) => p.configDir)];
+}
+
+/**
+ * Si otro Claude Code tiene la conversación abierta, se corta acá con quién y
+ * dónde. Dos procesos escribiendo el mismo `.jsonl` lo rompen, y ninguno de
+ * los dos se entera del otro cuando corren con cuentas distintas (ver
+ * `liveness.ts`). `consecuencia` es lo que pasaría de seguir, en los
+ * términos del botón que se tocó.
+ */
+async function exigirLibre(session: SessionMeta, profiles: Profile[], consecuencia: string): Promise<void> {
+  const dueno = await quienLaTiene(registrosDe(session, profiles), session.id, session.entorno);
+  if (!dueno) return;
+  throw new Error(
+    `Esta conversación la tiene abierta ${dondeEstaAbierta(dueno)} (proceso ${dueno.pid})` +
+      `${dueno.cwd ? ` en ${dueno.cwd}` : ''}. ${consecuencia} Cerrala ahí y volvé a tocar el botón.`
+  );
+}
 
 /**
  * Lee una raíz y, si vino vacía, confirma que sea por falta de sesiones y no
@@ -233,6 +258,48 @@ let barridoServido: Array<{ sesiones: SessionMeta[]; raiz: Raiz }> | null = null
 
 async function barrerRaices(): Promise<Array<{ sesiones: SessionMeta[]; raiz: Raiz }>> {
   return Promise.all((await raices()).map(leerRaiz));
+}
+
+/**
+ * La carpeta a trabajar: la que vino, o la que el usuario elija.
+ *
+ * `desde` es dónde ABRE el selector, no la carpeta elegida. Existe para una
+ * sola cosa y es la que pidió el usuario: llegar a las carpetas de una distro
+ * desde una cuenta común de Windows. La UNC `\\wsl.localhost\<distro>` es una
+ * ruta de Windows como cualquier otra —el selector navega ahí y `node:fs` la
+ * lee y la escribe—, pero nadie la escribe de memoria; abriendo el diálogo ya
+ * adentro, la distro es un par de clics y no un dato que hay que saber.
+ *
+ * Se comprobó que el camino entero funciona, no sólo el diálogo: el `claude`
+ * de Windows arranca con el cwd en esa UNC, y su transcript queda en el pozo
+ * de Windows (`projects\--wsl-localhost-…`) con el `cwd` ya en forma UNC. Por
+ * eso una sesión así se reanuda —en terminal y en Desktop— sin nada especial.
+ *
+ * `distro` acompaña a un `cwd` POSIX: el de una sesión que corrió adentro de
+ * una distro, cuando se pide "nueva en este proyecto" desde la barra lateral.
+ * Del lado de Windows `/home/…` no existe, así que se traduce a la UNC de ESA
+ * distro —la de la sesión, no la de la cuenta activa, que puede ser de Windows
+ * o de otra distro; con la activa, un proyecto de Ubuntu daba "la carpeta ya no
+ * existe" con una cuenta de Windows—. Lo que sale de acá está siempre en forma
+ * Windows: el `claude` de Windows corre en la UNC, Desktop la entiende (arma
+ * las rutas de la distro así en su bundle), y la terminal de una cuenta WSL la
+ * vuelve a POSIX en `abrirEnWsl`.
+ *
+ * `null` significa que se canceló, que no es un error y el llamador no tiene
+ * nada que decir.
+ */
+async function carpetaDeTrabajo(cwd?: string, desde?: string, distro?: string): Promise<string | null> {
+  if (typeof cwd === 'string' && cwd) {
+    return cwd.startsWith('/') && typeof distro === 'string' && distro ? posixAWindows(distro, cwd) : cwd;
+  }
+  const picked = await dialog.showOpenDialog({
+    title: 'Elegí la carpeta del proyecto',
+    properties: ['openDirectory'],
+    // Sólo si vino: sin esto el diálogo abre donde el sistema quiera, que es
+    // el comportamiento de siempre para el caso Windows.
+    ...(typeof desde === 'string' && desde ? { defaultPath: desde } : {})
+  });
+  return picked.canceled ? null : (picked.filePaths[0] ?? null);
 }
 
 function registerHandlers() {
@@ -361,28 +428,10 @@ function registerHandlers() {
   // No hay `requireLogin`: eso mira el token del CLI, y Desktop se autentica
   // por su cuenta adentro de la app. Exigirlo dejaría afuera justo a la cuenta
   // que todavía no pasó por el login del CLI.
-  handle('desktop:openIn', async (cwd?: string) => {
+  handle('desktop:openIn', async (cwd?: string, desde?: string, distro?: string) => {
     const { profile, relevo } = await profileForWork();
-    let dir = typeof cwd === 'string' && cwd ? cwd : null;
-    if (!dir) {
-      const picked = await dialog.showOpenDialog({
-        title: 'Elegí la carpeta del proyecto',
-        properties: ['openDirectory']
-      });
-      if (picked.canceled || !picked.filePaths[0]) return null;
-      dir = picked.filePaths[0];
-    }
-    // La carpeta de un proyecto de la distro llega POSIX (`/home/…`), que del
-    // lado de Windows no existe: sin traducir, el `stat` de abajo fallaría y
-    // Desktop tampoco la encontraría. En UNC sí: verificado en el bundle de
-    // Desktop, que arma las rutas de la distro exactamente en esa forma.
-    //
-    // La distro sale de la cuenta activa, que es la misma con la que la
-    // interfaz decide mostrar el botón. Sin cuenta WSL activa no hay de dónde
-    // sacarla y la ruta se deja como vino: el `stat` falla y lo dice.
-    if (dir.startsWith('/') && profile.entorno?.tipo === 'wsl') {
-      dir = posixAWindows(profile.entorno.distro, dir);
-    }
+    const dir = await carpetaDeTrabajo(cwd, desde, distro);
+    if (!dir) return null;
     // Una carpeta que ya no existe abriría Desktop igual, en cualquier lado y
     // sin decir por qué: pasa seguido con un proyecto viejo movido o borrado.
     const destino = await stat(dir).catch(() => null);
@@ -403,56 +452,63 @@ function registerHandlers() {
   // sólo muestra un aviso suyo y la ventana queda abierta sin explicar nada.
   handle('desktop:resume', async (id: string) => {
     const { session } = await findSession(id);
-    // Acá se negaba a abrir en Desktop cualquier sesión de una distro. El motivo
-    // que se daba —"Desktop es una app de Windows"— es falso: Desktop tiene su
-    // propio selector Local / Nube / Control remoto / WSL / SSH.
+
+    // Una conversación que vive adentro de una distro NO se reanuda acá, y el
+    // motivo sale del bundle de Desktop, no de una suposición.
     //
-    // Lo que faltaba era decirle DÓNDE buscar el transcript. Desktop lo resuelve
-    // por su `CLAUDE_CONFIG_DIR`, y acá se le pasaba siempre el pozo de Windows,
-    // que por supuesto no contiene una conversación de la distro. Ahora se le
-    // pasa la raíz de la sesión: para una de WSL es la UNC del `~/.claude` de
-    // adentro de la distro, y sobre esa UNC `node:fs` —y Desktop, que es
-    // Electron— lee y escribe. Reanudar es una escritura (Desktop reescribe el
-    // `.jsonl` al importarlo), y por eso importa que sea un directorio de
-    // verdad y no un enlace: el `projects` del pozo lo es. Ver el
-    // `PlantDetectedError` que describe el comentario grande de `desktop.ts`.
-    // La carpeta de trabajo, dejada como Desktop la puede encontrar.
+    // El enlace `claude://resume?session=…` entra por `importCliSession` ->
+    // `adoptCliSession`, que crea la sesión con backend LOCAL (`backend:
+    // n.Kt()` sin argumentos) leyendo el `cwd` del transcript. Por el enlace
+    // no viaja ningún objetivo remoto: en Desktop, WSL es un backend aparte
+    // (`wslConfig`, `WSLConnection`), el mismo camino que usa para SSH. Sólo
+    // reusa lo que ya tiene si el id figura tal cual como `local_<id>` en su
+    // almacén; si no, importa de nuevo.
     //
-    // Desktop la saca del `cwd` del transcript y no hay forma de pasársela por
-    // el enlace. La de una sesión de la distro es POSIX, del lado de Windows no
-    // existe, y el resultado era: la conversación se abría entera y arriba
-    // aparecía "La carpeta de trabajo ya no existe". De paso, como Desktop
-    // agrupa los proyectos por esa cadena, la misma carpeta figuraba dos veces
-    // en su barra lateral —una por el `/home/…` y otra por la UNC que el
-    // usuario elegía a mano—.
-    // Antes que nada: si otro Claude Code la tiene abierta, Desktop se va a
-    // negar a adoptarla —`liveOwnershipRefusal` en su bundle— y lo va a hacer
-    // callado: abre la ventana y la conversación llega hasta donde estaba, sin
-    // lo último. Ese era el "no me trae lo último".
+    // Con el `cwd` en `/home/…`, que de este lado no existe, Desktop hace lo
+    // que su bundle dice: "cwd unusable here, retargeting to <home>" y
+    // "Migrated transcript" a otra carpeta de proyecto, DEJANDO el original.
+    // Resultado: una sesión local que no es la de la distro, y el transcript
+    // copiado. Eso era el duplicado, y también por qué "no traía lo último":
+    // lo último se seguía escribiendo en el de la distro.
+    //
+    // El arreglo de raíz no es un parche acá adentro sino no llegar a este
+    // caso: trabajar la carpeta de la distro por su UNC desde una cuenta de
+    // Windows. Medido en esta máquina —el `claude` de Windows corriendo en
+    // \\wsl.localhost\Ubuntu\home\…— el transcript cae en el pozo de Windows
+    // con el `cwd` ya en forma UNC, así que Desktop la reanuda como cualquier
+    // otra: una sola raíz, una sola entrada, nada que reescribir. El botón ya
+    // viene deshabilitado con este motivo (ver `motivoDeshabilitado`); esto es
+    // la frontera.
+    if (session.entorno.tipo === 'wsl') {
+      throw new Error(
+        `Esta conversación corre adentro de "${session.entorno.distro}" y el enlace con el que Claude Desktop importa ` +
+          'sesiones sólo sabe abrirlas como sesión local de Windows: su carpeta está en /home/… y de este lado no ' +
+          'existe, así que Desktop la movería a tu carpeta personal con una copia del transcript, y lo último seguiría ' +
+          'escribiéndose en la de la distro. Reanudala en la terminal, que entra a la distro y sigue esa misma. Para ' +
+          `trabajar en Desktop sobre esa carpeta, usá "Nueva en Desktop…" eligiendo arriba la carpeta de ${session.entorno.distro}: ` +
+          'así la conversación nace del lado de Windows y Desktop la reanuda sin copias.'
+      );
+    }
+
+    // Si otro Claude Code la tiene abierta, Desktop se va a negar a adoptarla
+    // —`liveOwnershipRefusal` en su bundle— y lo va a hacer callado: abre la
+    // ventana y la conversación llega hasta donde estaba, sin lo último. Y si
+    // el otro es una terminal de OTRA cuenta, ni se va a negar: no la ve (mira
+    // sólo su `sessions/`), la adopta y reescribe el `.jsonl` mientras el CLI
+    // lo sigue escribiendo.
     //
     // Negarse no es opcional y no es nuestro: dos procesos escribiendo el
     // mismo `.jsonl` lo rompen. Lo que sí es nuestro es DECIRLO, y decir dónde
     // cerrarla. Ver `liveness.ts`.
-    const dueno = await quienLaTiene(session.raiz, session.id, session.entorno);
-    if (dueno) {
-      throw new Error(
-        `Esta conversación la tiene abierta ${dondeEstaAbierta(dueno)} (proceso ${dueno.pid})` +
-          `${dueno.cwd ? ` en ${dueno.cwd}` : ''}. Claude Desktop no adopta una sesión que otro ` +
-          'proceso está escribiendo —se la llevaría a medias y sin lo último—. Cerrala ahí y volvé ' +
-          'a tocar el botón.'
-      );
-    }
-
-    const carpetaWsl =
-      session.entorno.tipo === 'wsl' ? posixAWindows(session.entorno.distro, session.cwd) : null;
-    if (carpetaWsl) await apuntarCwdAWindows(rutaDe(session), session.cwd, carpetaWsl);
+    const { profiles } = await allProfiles();
+    await exigirLibre(
+      session,
+      profiles,
+      'Claude Desktop no puede adoptar una sesión que otro proceso está escribiendo: se la llevaría a medias y sin lo último.'
+    );
 
     const { profile, relevo } = await profileForWork();
-    return {
-      ...(await openDesktopForProfile(profile, session.raiz, resumeLink(session.id))),
-      relevo,
-      carpetaWsl: carpetaWsl ?? undefined
-    };
+    return { ...(await openDesktopForProfile(profile, session.raiz, resumeLink(session.id))), relevo };
   });
 
   // El protocolo `claude://`, que es lo que decide si Desktop hace el login de
@@ -513,6 +569,16 @@ function registerHandlers() {
             : 'No hay ninguna cuenta activa con la que reanudar esta sesión.'
       );
     }
+    // El propio `claude` se niega a reanudar una sesión que otra terminal
+    // tiene abierta, pero sólo si la ve: mira el `sessions/` de SU
+    // CLAUDE_CONFIG_DIR, y Desktop —o una terminal de otra cuenta— anota en
+    // otro. Sin esto, la terminal arrancaba encima y los dos escribían el
+    // mismo transcript.
+    await exigirLibre(
+      session,
+      profiles,
+      'Abrirla en otra terminal haría que los dos escriban el mismo transcript y se pisen: el "claude" de acá no ve al otro porque cada cuenta anota sus sesiones vivas en su propia carpeta.'
+    );
     await requireLogin(target);
     await openTerminalAs(session.cwd, `claude --resume ${session.id}`, target);
     // El aviso de cambio de cuenta por falta de cupo sólo tiene sentido en
@@ -528,25 +594,16 @@ function registerHandlers() {
   // Una cuenta recién creada apunta a un CLAUDE_CONFIG_DIR vacío: no tiene
   // sesiones ni proyectos, y sin esto no habría forma de crear la primera
   // desde la app. Abre `claude` (sin --resume) en la carpeta elegida.
-  handle('sessions:new', async (cwd?: string) => {
+  handle('sessions:new', async (cwd?: string, desde?: string, distro?: string) => {
     const { profile, relevo } = await profileForWork();
     await requireLogin(profile);
-    let dir = typeof cwd === 'string' && cwd ? cwd : null;
-    if (!dir) {
-      const picked = await dialog.showOpenDialog({
-        title: 'Elegí la carpeta del proyecto',
-        properties: ['openDirectory']
-      });
-      if (picked.canceled || !picked.filePaths[0]) return null;
-      dir = picked.filePaths[0];
-    }
-    // `dir` no se traduce a POSIX acá aunque `profile` sea de WSL: el diálogo
-    // es de Windows siempre (elija la carpeta que elija, incluso una dentro de
-    // una distro por su UNC \\wsl.localhost\...), y `openTerminal` ->
-    // `abrirEnWsl` YA hace `cwd.startsWith('/') ? cwd : windowsAPosix(distro,
-    // cwd)` antes del `--cd`. Traducir acá también dejaría dos lugares con la
-    // misma regla, que es justo lo que se evita: la traducción vive en un
-    // único lugar, el que no se puede saltear.
+    const dir = await carpetaDeTrabajo(cwd, desde, distro);
+    if (!dir) return null;
+    // `dir` llega en forma Windows siempre (ver `carpetaDeTrabajo`) y no se
+    // traduce a POSIX acá aunque `profile` sea de WSL: `openTerminal` ->
+    // `abrirEnWsl` YA hace `windowsAPosix(distro, cwd)` antes del `--cd`, y
+    // si la carpeta es de OTRA distro, es ahí donde se explica que desde ésta
+    // no se ve. Traducir acá también dejaría dos lugares con la misma regla.
     await openTerminalAs(dir, 'claude', profile);
     return { relevo };
   });
@@ -567,6 +624,48 @@ function registerHandlers() {
     const sesiones = mezclarRaices(leidas.map((l) => l.sesiones));
     return tokensFor(sesiones.map((s) => ({ id: s.id, path: rutaDe(s) })));
   });
+  // La oficina se refresca cada par de segundos: sólo lee el registro de
+  // sesiones vivas y la cola de sus transcripts, nunca barre las raíces.
+  handle('oficina:estado', async () => {
+    const [agentes, nombres] = await Promise.all([agentesVivos((await allProfiles()).profiles), leerNombres()]);
+    for (const a of agentes) {
+      Object.assign(a, conNombre(nombres[a.sessionId], a.nombre));
+      a.subagentes = a.subagentes.map((s) => ponerNombre(s, nombres[`${a.sessionId}/${s.agentId}`]));
+    }
+    return agentes;
+  });
+  // La oficina pixel art completa (editor, mascotas…) es Pixel Agents: se
+  // arranca la primera vez que se abre la pestaña y vive hasta cerrar la app.
+  handle('oficina:pixel', () => urlOficina());
+  handle('oficina:abrir', async () => {
+    abrirOficina();
+    return null;
+  });
+  // Pixel Agents conoce a sus personajes por un id numérico; su servidor
+  // (parcheado) sabe de qué sesión es cada uno. La ventana lo necesita para
+  // abrir la conversación del que se clica y para decirle a quién mostrar.
+  handle('oficina:mapaPixel', async () => {
+    const base = new URL(await urlOficina()).origin;
+    const lista = (await (await fetch(`${base}/api/claude-monitor/agents`)).json()) as Array<{
+      id: number;
+      sessionId: string;
+      jsonlFile: string;
+    }>;
+    return lista.map(({ id, sessionId, jsonlFile }) => ({ id, sessionId, jsonlFile: jsonlFile ?? '' }));
+  });
+  // El panel de conversación se relee mientras está abierto; buscar la sesión
+  // por todas las raíces en cada lectura sería el barrido entero cada vez.
+  handle('oficina:conversacion', async (id: string, agentId?: string) =>
+    conversacionDe(await rutaConversacion(id), agentId || undefined)
+  );
+  handle('oficina:equipo', async (id: string) => {
+    const [equipo, nombres] = await Promise.all([equipoDe(await rutaConversacion(id)), leerNombres()]);
+    return equipo.map((s) => ponerNombre(s, nombres[`${id}/${s.agentId}`]));
+  });
+  handle('oficina:nombrar', async (clave: string, nombre: string, nota: string) => {
+    await nombrar(clave, nombre, nota);
+    return null;
+  });
   handle('sessions:delete', async (id: string) => {
     const { session } = await findSession(id);
     // Mismo motivo que en `desktop:resume`: el botón deshabilitado es la
@@ -581,18 +680,21 @@ function registerHandlers() {
   });
 
   // El alta de una cuenta que vive en una distro de WSL: listar las
-  // instaladas para elegir, y crear el perfil adoptando su `~/.claude`.
+  // instaladas para elegir, y crear el perfil con su propia carpeta adentro de
+  // la distro (`~/.claude-monitor/<id>`, con `projects` enlazado al pozo).
   handle('profiles:listarDistros', async () => distrosInstaladas());
   handle('profiles:createWsl', (name: string, distro: string) => createWslProfile(name, distro));
   // Sólo acá se enciende una distro, y sólo porque el usuario apretó el botón.
   handle('wsl:encender', (distro: string) => encenderDistro(distro));
 }
 
-function createWindow() {
+/** `hash` elige la vista: vacío es el panel, `oficina` la Oficina en vivo. */
+function createWindow(hash = '', opciones: Electron.BrowserWindowConstructorOptions = {}) {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
     icon: join(import.meta.dirname, '../../build/icon.png'),
+    ...opciones,
     webPreferences: {
       preload: join(import.meta.dirname, '../preload/preload.cjs'),
       contextIsolation: true,
@@ -601,10 +703,24 @@ function createWindow() {
   });
 
   if (process.env.ELECTRON_RENDERER_URL) {
-    win.loadURL(process.env.ELECTRON_RENDERER_URL);
+    win.loadURL(process.env.ELECTRON_RENDERER_URL + (hash ? `#${hash}` : ''));
   } else {
-    win.loadFile(join(import.meta.dirname, '../renderer/index.html'));
+    win.loadFile(join(import.meta.dirname, '../renderer/index.html'), hash ? { hash } : undefined);
   }
+  return win;
+}
+
+/** La Oficina en vivo va en su propia ventana, para seguir usando el panel al
+ *  mismo tiempo. Una sola: si ya está abierta, se trae al frente. */
+let ventanaOficina: BrowserWindow | null = null;
+function abrirOficina() {
+  if (ventanaOficina && !ventanaOficina.isDestroyed()) {
+    if (ventanaOficina.isMinimized()) ventanaOficina.restore();
+    ventanaOficina.focus();
+    return;
+  }
+  ventanaOficina = createWindow('oficina', { width: 1500, height: 900, title: 'Claude Monitor · Oficina en vivo' });
+  ventanaOficina.on('closed', () => (ventanaOficina = null));
 }
 
 /**
@@ -683,6 +799,8 @@ app.whenReady().then(async () => {
   const url = enlaceEn(process.argv);
   if (url) await reenviarEnlace(url);
 });
+
+app.on('will-quit', detenerOficina);
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

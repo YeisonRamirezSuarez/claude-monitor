@@ -406,6 +406,18 @@ select:focus {
   width: 100%;
 }
 
+/* El selector de donde buscar la carpeta. Va antes de los dos botones y solo
+   aparece si hay una distro instalada, asi que en una maquina sin WSL la barra
+   queda exactamente como estaba. */
+.toolbar .donde {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+}
+
 .toolbar .search {
   margin-bottom: 0;
 }
@@ -543,6 +555,36 @@ select:focus {
   border-radius: 10px;
   border: 1px solid currentColor;
   opacity: 0.7;
+}
+
+/* Las copias de una misma conversación (bifurcaciones). Misma forma que la
+   marca de origen; como botón, sin el fondo de los botones de acción. */
+.chip-linaje {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid currentColor;
+  opacity: 0.7;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  cursor: default;
+}
+
+button.chip-linaje {
+  cursor: pointer;
+}
+
+button.chip-linaje:hover {
+  opacity: 1;
+}
+
+/* Una copia desplegada va debajo de su principal, corrida, para que se lea
+   como "la misma conversación" y no como otra sesión más. */
+.card.bifurcacion {
+  margin-left: 28px;
+  opacity: 0.85;
 }
 
 .card .actions {
@@ -897,4 +939,576 @@ button.link.incierto {
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* --- oficina en vivo --- */
+.oficina-toggle {
+  margin: 0 0 12px 8px;
+}
+
+.oficina-overlay {
+  gap: 16px;
+}
+
+.oficina {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid #38bdf84d;
+  border-radius: 14px;
+  box-shadow: 0 24px 70px #000000a6, 0 0 40px #38bdf814;
+  overflow: hidden;
+}
+
+.oficina > header,
+.conv > header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.oficina-alerta {
+  color: var(--warn);
+}
+
+.oficina-cuentas {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.oficina-cuentas button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.oficina-cuentas button.activa {
+  border-color: var(--neon);
+  color: var(--neon);
+}
+
+.oficina-cuentas span {
+  color: var(--dim);
+  margin-left: 4px;
+}
+
+
+
+
+.conv {
+  width: min(520px, 42vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid #38bdf84d;
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.conv > header > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.conv > header p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conv-cuerpo {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.conv-turno,
+.conv-msg,
+.conv-sub {
+  border-radius: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+}
+
+.conv-turno.usuario {
+  background: #1e3a5f55;
+  align-self: flex-end;
+  max-width: 88%;
+}
+
+.conv-turno.claude {
+  background: var(--panel-2);
+}
+
+.conv-msg {
+  background: #3f2d0c55;
+  border-color: #fbbf2455;
+}
+
+.conv-sub {
+  background: #1a2e2455;
+  border-color: #34d39955;
+}
+
+.conv-sub p {
+  margin: 0 0 4px;
+}
+
+.conv-quien {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dim);
+}
+
+.conv-texto {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.conv-tool {
+  font-size: 12px;
+  border-left: 2px solid var(--line);
+  padding: 2px 0 2px 10px;
+}
+
+.conv-tool.corriendo {
+  border-left-color: var(--neon);
+}
+
+.conv-tool.error {
+  border-left-color: var(--bad);
+}
+
+.conv-tool summary {
+  cursor: pointer;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conv-tool-nombre {
+  color: var(--neon);
+  font-weight: 600;
+}
+
+.conv-tool-estado {
+  margin-left: 6px;
+  color: var(--warn);
+}
+
+.conv-tool.error .conv-tool-estado {
+  color: var(--bad);
+}
+
+.conv pre {
+  margin: 6px 0 0;
+  padding: 8px;
+  background: #02040a;
+  border-radius: 6px;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11.5px;
+}
+
+.conv-resultado {
+  border-left: 2px solid var(--ok);
+}
+
+.conv-aviso {
+  font-size: 12px;
+  margin: 0;
+}
+
+.oficina-cuerpo {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.oficina-pixel {
+  flex: 1;
+  min-width: 0;
+}
+
+.oficina-pixel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+}
+
+.oficina-pixel iframe {
+  flex: 1;
+  border: 0;
+  border-radius: 8px;
+  background: #1e1e2e;
+}
+
+.oficina-lista {
+  width: 280px;
+  list-style: none;
+  margin: 0;
+  padding: 8px;
+  border-left: 1px solid var(--line);
+  overflow: auto;
+}
+
+.oficina-lista ul {
+  list-style: none;
+  margin: 2px 0 6px 14px;
+  padding: 0;
+  border-left: 1px dashed var(--line);
+}
+
+.oficina-item {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  border-left: 3px solid var(--dim);
+  margin: 2px 0;
+}
+
+.oficina-item span {
+  font-size: 11.5px;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oficina-item.sub strong {
+  font-weight: 500;
+  font-size: 12.5px;
+}
+
+.oficina-item.activo {
+  background: #38bdf81f;
+}
+
+.oficina-item.escribiendo,
+.oficina-item.delegando {
+  border-left-color: var(--neon);
+}
+
+.oficina-item.leyendo,
+.oficina-item.pensando {
+  border-left-color: #a78bfa;
+}
+
+.oficina-item.permiso {
+  border-left-color: var(--warn);
+}
+
+.oficina-item.terminado {
+  border-left-color: var(--ok);
+}
+
+/* --- sala de una sesión --- */
+.sala {
+  width: min(640px, 46vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid #38bdf84d;
+  border-radius: 14px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.sala > header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sala > header > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.sala > header p,
+.sala-miembro-cabeza p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sala .sala-nota {
+  color: var(--text);
+  white-space: normal;
+}
+
+
+
+.sala-equipo {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sala-equipo > p {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.sala-chips {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.sala-chip {
+  flex: 0 0 auto;
+  max-width: 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--dim);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.sala-chip strong,
+.sala-chip span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sala-chip span {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.sala-chip.principal {
+  border-color: #facc1566;
+  border-left-color: #facc15;
+}
+
+.sala-chip.activo {
+  background: #38bdf81f;
+}
+
+.sala-chip.escribiendo,
+.sala-chip.delegando {
+  border-left-color: var(--neon);
+}
+
+.sala-chip.leyendo,
+.sala-chip.pensando {
+  border-left-color: #a78bfa;
+}
+
+.sala-chip.permiso {
+  border-left-color: var(--warn);
+}
+
+.sala-chip.terminado {
+  opacity: 0.6;
+  border-left-color: var(--ok);
+}
+
+.sala-miembro {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sala-miembro-cabeza {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 8px 16px 4px;
+}
+
+.sala-miembro-cabeza > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.sala-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 16px 8px;
+}
+
+.sala-editor input,
+.sala-editor textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.oficina-item em {
+  font-size: 11.5px;
+  font-style: normal;
+  color: var(--text);
+  opacity: 0.8;
+}
+
+.oficina-ventana {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+}
+
+.oficina-avisos {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.oficina-avisos p {
+  margin: 0;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: #0b1120e6;
+  border: 1px solid #facc1566;
+  color: #fde68a;
+  font-size: 13px;
+  text-align: center;
+}
+
+.oficina-siguiendo {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 6px 4px 12px;
+  border-radius: 999px;
+  background: #0b1120e6;
+  border: 1px solid #38bdf866;
+  color: var(--text);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+/* --- oficina compacta --- */
+.oficina-lista {
+  width: 210px;
+  padding: 6px;
+}
+
+.oficina-item {
+  padding: 3px 6px;
+  margin: 1px 0;
+  border-left-width: 2px;
+}
+
+.oficina-item strong {
+  font-size: 12.5px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.oficina-item span,
+.oficina-item em {
+  font-size: 10.5px;
+}
+
+.oficina-item.sub strong {
+  font-size: 11.5px;
+}
+
+.oficina-lista ul {
+  margin: 0 0 3px 8px;
+}
+
+.sala {
+  width: min(460px, 34vw);
+}
+
+.sala > header {
+  padding: 8px 12px;
+}
+
+.sala > header strong,
+.sala-miembro-cabeza strong {
+  font-size: 13px;
+}
+
+.sala > header p,
+.sala-miembro-cabeza p {
+  font-size: 11px;
+}
+
+.sala-equipo {
+  padding: 6px 10px;
+}
+
+.sala-chip {
+  max-width: 170px;
+  padding: 3px 7px;
+  font-size: 11px;
+}
+
+.sala-chip span {
+  font-size: 10px;
+}
+
+.sala-miembro-cabeza {
+  padding: 6px 12px 2px;
+}
+
+.sala .conv-cuerpo {
+  padding: 8px 10px;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.sala .conv-turno,
+.sala .conv-msg,
+.sala .conv-sub {
+  padding: 6px 9px;
+}
+
+.oficina-lista li.quieta .oficina-item {
+  opacity: 0.55;
+}
+
+.oficina-quietas {
+  font-size: 11px;
+  margin-top: 6px;
+  color: var(--dim);
 }

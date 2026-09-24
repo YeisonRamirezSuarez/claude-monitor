@@ -1,6 +1,6 @@
 {
   "name": "claude-monitor",
-  "version": "0.7.1",
+  "version": "0.18.1",
   "private": true,
   "type": "module",
   "main": "out/main/main.js",
@@ -51,6 +51,15 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Claude Monitor"
-    }
+    },
+    "extraResources": [
+      {
+        "from": "vendor/pixel-agents",
+        "to": "pixel-agents",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
   }
 }

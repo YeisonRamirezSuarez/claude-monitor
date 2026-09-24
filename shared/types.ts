@@ -79,6 +79,12 @@ export type ParsedSession = {
   cwd: string;
   gitBranch: string;
   preview: string;
+  /** Qué conversación es, más allá del archivo. Es el `uuid` de la primera
+   *  línea del transcript: al bifurcar una sesión (`--fork-session`, o el
+   *  rebobinar de Desktop) Claude Code copia el transcript entero a un
+   *  `.jsonl` nuevo, así que las dos copias empiezan igual y comparten esto.
+   *  Vacío si el archivo no trae ninguno. Ver `agruparLinajes`. */
+  linaje: string;
 };
 
 export type SessionMeta = ParsedSession & {
@@ -150,6 +156,87 @@ export type Transcript = {
   truncated: boolean;
 };
 
+/** Qué está haciendo un agente según el final de su transcript. */
+export type ActividadAgente = {
+  tipo: 'escribiendo' | 'leyendo' | 'delegando' | 'pensando' | 'listo';
+  herramienta: string;
+  detalle: string;
+};
+
+/** Lo que se muestra en la oficina. `permiso` es una herramienta pedida con la
+ *  sesión quieta: está esperando que la apruebes. `esperando` es que terminó
+ *  su turno y te toca hablar. */
+export type EstadoAgente = 'escribiendo' | 'leyendo' | 'delegando' | 'pensando' | 'permiso' | 'esperando';
+
+export type SubagenteOficina = {
+  agentId: string;
+  /** El `tool_use` del `Agent` que lo lanzó: así lo identifica Pixel Agents. */
+  toolUseId: string;
+  /** Lo que el usuario le puso en la oficina (`nombres.json`); vacío si nada. */
+  nombrePropio: string;
+  nota: string;
+  /** Última vez que escribió, en ms. */
+  ultimaActividad: number;
+  tipoAgente: string;
+  descripcion: string;
+  /** `terminado`: devolvió su informe hace poco; se muestra un rato con ✓. */
+  estado: Exclude<EstadoAgente, 'permiso' | 'esperando'> | 'terminado';
+  herramienta: string;
+  detalle: string;
+};
+
+/** Una sesión viva, con la cuenta que la está corriendo. */
+export type AgenteOficina = {
+  sessionId: string;
+  profileId: string;
+  profileName: string;
+  nombre: string;
+  cwd: string;
+  origen: 'terminal' | 'desktop';
+  estado: EstadoAgente;
+  herramienta: string;
+  detalle: string;
+  subagentes: SubagenteOficina[];
+  /** Lo que el usuario le puso en la oficina; vacío si nada. `nombre` ya lo trae aplicado. */
+  nombrePropio: string;
+  nota: string;
+  /** Mensajes entre agentes de los últimos segundos: `de` o `para` es el id
+   *  del otro agente (el lado vacío es esta sesión). */
+  mensajes: Array<{ de: string; para: string }>;
+};
+
+/** Un paso de la conversación, con la maquinaria incluida. */
+export type ConversacionItem =
+  | { tipo: 'usuario'; texto: string; ts: string }
+  | { tipo: 'claude'; texto: string; ts: string }
+  | {
+      tipo: 'herramienta';
+      toolId: string;
+      nombre: string;
+      detalle: string;
+      entrada: string;
+      /** `null` mientras está corriendo. */
+      resultado: string | null;
+      error: boolean;
+      ts: string;
+    }
+  | {
+      tipo: 'subagente';
+      toolId: string;
+      /** Con esto se abre su conversación. Vacío hasta que arranca. */
+      agentId: string;
+      tipoAgente: string;
+      descripcion: string;
+      prompt: string;
+      resultado: string;
+      ts: string;
+    }
+  /** Entre agentes: con `para` lo mandó esta conversación; con `de`, lo recibió. */
+  | { tipo: 'mensaje'; de: string; para: string; texto: string; ts: string }
+  | { tipo: 'aviso'; texto: string; ts: string };
+
+export type Conversacion = { cwd: string; items: ConversacionItem[]; truncada: boolean };
+
 export type ProfileList = { activeProfileId: string; profiles: ProfileWithStatus[] };
 
 export type ClaudeMonitorApi = {
@@ -160,8 +247,10 @@ export type ClaudeMonitorApi = {
   /** Las distros de WSL instaladas, para elegir una al dar de alta una cuenta
    *  que vive ahí. No enciende ninguna: `wsl -l -q` lista sin tocar el disco. */
   listarDistrosWsl: () => Promise<Result<string[]>>;
-  /** Da de alta una cuenta que vive en una distro de WSL. El `configDir` es
-   *  ADOPTADO: no se crea nada en disco. Ver `createWslProfile` en `profiles.ts`. */
+  /** Da de alta una cuenta que vive en una distro de WSL: crea su carpeta
+   *  `~/.claude-monitor/<id>` adentro de la distro, con `projects` enlazado al
+   *  pozo de esa distro. Quitar la cuenta no la borra. Ver `createWslProfile`
+   *  en `profiles.ts`. */
   createWslProfile: (name: string, distro: string) => Promise<Result<Profile>>;
   /** Enciende una distro a propósito, porque el usuario apretó el botón. Es el
    *  único lugar de la app que lo hace — ver `encenderDistro` en `wsl.ts`. */
@@ -182,8 +271,13 @@ export type ClaudeMonitorApi = {
    *  resumen y el historial previo no vuelve. */
   resumeSession: (id: string) => Promise<Result<ResumeResult>>;
   /** Abre una terminal nueva corriendo `claude` en `cwd` con la cuenta activa.
-   *  Sin `cwd` pide la carpeta con el selector nativo. */
-  newSession: (cwd?: string) => Promise<Result<Relevo | null>>;
+   *  Sin `cwd` pide la carpeta con el selector nativo, abriéndolo en `desde`
+   *  si se pasa: así se llega a las carpetas de una distro —por su UNC
+   *  `\\wsl.localhost\<distro>`— desde una cuenta común de Windows, sin
+   *  tener que escribir la ruta de memoria. `distro` acompaña a un `cwd` POSIX
+   *  (el de una sesión de la distro) y dice de cuál es: sin eso la ruta no se
+   *  puede traducir a algo que Windows encuentre. */
+  newSession: (cwd?: string, desde?: string, distro?: string) => Promise<Result<Relevo | null>>;
   deleteSession: (id: string) => Promise<Result<null>>;
   /** El consumo de cada sesión, por id. Se pide aparte de `listSessions`
    *  porque hay que leer los transcripts enteros: la lista tiene que poder
@@ -206,7 +300,7 @@ export type ClaudeMonitorApi = {
    *  `null` si se cancela. Desktop no sabe reanudar una sesión del CLI por id:
    *  lo más cerca es abrir su carpeta, y las sesiones del CLI de esa cuenta
    *  aparecen en el panel lateral de Desktop. */
-  openDesktopIn: (cwd?: string) => Promise<Result<DesktopOpenResult | null>>;
+  openDesktopIn: (cwd?: string, desde?: string, distro?: string) => Promise<Result<DesktopOpenResult | null>>;
   /** Reanuda esa misma conversación en el Claude Desktop de la cuenta activa.
    *  Desktop adopta el transcript del CLI por su id: es la conversación
    *  entera, no una sesión nueva en la misma carpeta. */
@@ -221,6 +315,22 @@ export type ClaudeMonitorApi = {
   /** El registro de la app y, si se pide una cuenta, las líneas que importan
    *  del log de su ventana de Claude Desktop. */
   readLogs: (profileId?: string) => Promise<Result<Logs>>;
+  /** Las sesiones vivas de todas las cuentas y qué está haciendo cada una. */
+  oficina: () => Promise<Result<AgenteOficina[]>>;
+  /** La URL de la oficina de Pixel Agents, arrancándola si hace falta. */
+  oficinaPixel: () => Promise<Result<string>>;
+  /** Abre la Oficina en vivo en su propia ventana, o la trae al frente. */
+  abrirOficina: () => Promise<Result<null>>;
+  /** Qué sesión es cada personaje de Pixel Agents (por su id numérico). */
+  mapaPixel: () => Promise<Result<Array<{ id: number; sessionId: string; jsonlFile: string }>>>;
+  /** Todos los subagentes de una sesión, primero los que corren. */
+  equipo: (sessionId: string) => Promise<Result<SubagenteOficina[]>>;
+  /** Nombre y nota de una sesión (`sessionId`) o subagente (`sessionId/agentId`).
+   *  Los dos vacíos lo borran. */
+  nombrar: (clave: string, nombre: string, nota: string) => Promise<Result<null>>;
+  /** La conversación con herramientas, subagentes y mensajes. Con `agentId`,
+   *  la de ese subagente de la sesión. */
+  conversacion: (sessionId: string, agentId?: string) => Promise<Result<Conversacion>>;
 };
 
 export type DesktopOpenResult = {
@@ -235,19 +345,6 @@ export type DesktopOpenResult = {
    *  las del panel, así que conviene avisar antes de que se confundan. */
   ajenas?: number;
   relevo?: string | null;
-  /**
-   * La carpeta de trabajo de una sesión de WSL, en forma UNC, para poder
-   * decírsela al usuario.
-   *
-   * Desktop importa la conversación entera y después no encuentra la carpeta:
-   * el `cwd` del transcript es POSIX (`/home/…`) y del lado de Windows no
-   * existe, así que muestra "La carpeta de trabajo ya no existe". No se puede
-   * evitar desde acá — el enlace `claude://resume?session=…` sólo acepta el
-   * `session`, verificado en el bundle de Desktop: su handler lee ese único
-   * parámetro y la carpeta la saca del `.jsonl`—. Lo que sí se puede es
-   * decirle al usuario exactamente qué pegar en "Elegir carpeta".
-   */
-  carpetaWsl?: string;
 };
 
 export type ProtocolStatus = { nuestro: boolean; empaquetada?: boolean };

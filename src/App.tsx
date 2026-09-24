@@ -37,6 +37,11 @@ export default function App() {
   // Desktop se hace adentro de la ventana de cada cuenta o se va al navegador.
   const [protocoloNuestro, setProtocoloNuestro] = useState<boolean | null>(null);
   const [empaquetada, setEmpaquetada] = useState(true);
+  // Las distros instaladas. Alimenta un solo control: donde abrir el selector
+  // de carpeta. Va aparte de `raices` a proposito — `raices` sale de las
+  // CUENTAS dadas de alta, y para elegir una carpeta de Ubuntu no hace falta
+  // ninguna: la carpeta se trabaja desde la cuenta de Windows por su UNC.
+  const [distros, setDistros] = useState<string[]>([]);
 
   // Dos refresh pueden estar en vuelo a la vez (una acción y el listener de
   // focus, o dos clics rápidos). Sólo el último iniciado puede escribir estado:
@@ -78,6 +83,12 @@ export default function App() {
       if (!r.ok) return;
       setProtocoloNuestro(r.data.nuestro);
       setEmpaquetada(r.data.empaquetada ?? true);
+    });
+    // `wsl -l -q` lista sin tocar el disco de ninguna distro, asi que no
+    // enciende nada. Una vez al arrancar alcanza: instalar una distro no es
+    // algo que pase mientras el panel esta abierto.
+    window.claudeMonitor.listarDistrosWsl().then((r) => {
+      if (r.ok) setDistros(r.data);
     });
   }, []);
 
@@ -145,10 +156,10 @@ export default function App() {
     await refresh();
   };
 
-  // Da de alta una cuenta que vive en una distro de WSL. El `configDir` sale
-  // ADOPTADO de esa distro, así que no hay carpeta que crear acá — a
-  // diferencia de `onAddAccount`, no hay Chrome propio que abrir: el login de
-  // esta cuenta pasa por la terminal de la distro, no por el navegador.
+  // Da de alta una cuenta que vive en una distro de WSL. Su carpeta se crea
+  // ADENTRO de la distro (`createWslProfile`), no acá — y a diferencia de
+  // `onAddAccount`, no hay Chrome propio que abrir: el login de esta cuenta
+  // corre adentro de la distro, no en el navegador de la cuenta.
   const addWslAccount = async (name: string, distro: string) => {
     setError('');
     setNotice('');
@@ -221,10 +232,10 @@ export default function App() {
   // Es la mitad "Desktop" de reanudar. No reanuda: Desktop no acepta un id de
   // sesión, así que abre el proyecto — y ahí sus propias sesiones del CLI,
   // las de esa cuenta, le quedan al usuario en el panel lateral.
-  const openDesktopIn = async (cwd?: string) => {
+  const openDesktopIn = async (cwd?: string, desde?: string, distro?: string) => {
     setError('');
     setNotice('');
-    const result = await window.claudeMonitor.openDesktopIn(cwd);
+    const result = await window.claudeMonitor.openDesktopIn(cwd, desde, distro);
     if (!result.ok) return setError(result.error);
     if (!result.data) return; // se canceló el selector de carpeta
     const aviso = (texto: string) => setNotice([result.data?.relevo, texto].filter(Boolean).join(' '));
@@ -238,10 +249,10 @@ export default function App() {
 
   // Abre una terminal nueva. Igual que reanudar, puede haber relevado la cuenta
   // por falta de cupo, y eso hay que decirlo: cambia a quién le sale el gasto.
-  const nuevaEnTerminal = async (cwd?: string) => {
+  const nuevaEnTerminal = async (cwd?: string, desde?: string, distro?: string) => {
     setError('');
     setNotice('');
-    const result = await window.claudeMonitor.newSession(cwd);
+    const result = await window.claudeMonitor.newSession(cwd, desde, distro);
     if (!result.ok) return setError(result.error);
     if (result.data?.relevo) setNotice(result.data.relevo);
   };
@@ -259,15 +270,10 @@ export default function App() {
         result.data.firstRun
           ? 'Se abrió un Claude Desktop propio para esta cuenta, sin sesión iniciada. Iniciala ahí adentro, con Google o con correo. Si entrás con Google se va a abrir tu navegador de siempre — es así en Windows — y de ahí volvés solo. Si al volver no ves la ventana de Desktop, tocá el botón de nuevo: la trae de vuelta, aunque puede que tengas que repetir el login.'
           : 'Claude Desktop está importando esa conversación, con todo el historial. Al importarla reescribe el ' +
-            '.jsonl para sacarle los bloques de razonamiento y deja una copia .pre-import al lado; podés seguir ' +
-            'reanudándola desde la terminal igual.',
-        // Una sesión de la distro trae un `cwd` POSIX, y Desktop lo busca del
-        // lado de Windows: importa la conversación entera y después dice "La
-        // carpeta de trabajo ya no existe". No hay forma de evitarlo desde
-        // acá —`claude://resume` sólo acepta `session`—, así que se avisa
-        // antes y se le da la ruta ya traducida para pegar.
-        result.data.carpetaWsl &&
-          `La carpeta de trabajo quedó apuntada a ${result.data.carpetaWsl}, que es la misma de la distro pero como la ve Windows: sin eso Desktop decía "La carpeta de trabajo ya no existe". Queda una copia .pre-unc del transcript al lado, con la ruta original. Y si esta conversación está abierta en OTRO Desktop, cerrala ahí primero: Desktop no adopta una sesión que otro proceso tiene en uso.`
+            '.jsonl para sacarle los bloques de razonamiento y deja una copia .pre-import al lado. Mientras ' +
+            'Desktop la tenga abierta, la terminal no la va a poder tomar (ni al revés): cerrala en un lado ' +
+            'antes de seguirla en el otro, así los dos no escriben el mismo transcript. Y ojo con "rebobinar" ' +
+            'en Desktop: eso la bifurca en un archivo nuevo, que acá aparece plegado bajo la tarjeta.',
       ]
         .filter(Boolean)
         .join(' ')
@@ -375,8 +381,8 @@ export default function App() {
         onLogin={(id) => startLogin(id)}
         onOpenChrome={(id) => openChrome(id)}
         onOpenDesktop={(id) => openDesktop(id)}
-        onNewSessionIn={(cwd) => nuevaEnTerminal(cwd)}
-        onNewSessionInDesktop={(cwd) => openDesktopIn(cwd)}
+        onNewSessionIn={(cwd, distro) => nuevaEnTerminal(cwd, undefined, distro)}
+        onNewSessionInDesktop={(cwd, distro) => openDesktopIn(cwd, undefined, distro)}
         onDeleteProfile={(id) => {
           setSelectedSlug(null);
           run(() => window.claudeMonitor.deleteProfile(id));
@@ -416,6 +422,9 @@ export default function App() {
             Desktop o con el protocolo no funciona como se espera. */}
         <button className="link logs-toggle" onClick={() => setShowLogs(true)}>
           Ver registro
+        </button>
+        <button className="primary oficina-toggle" onClick={() => window.claudeMonitor.abrirOficina()}>
+          Oficina en vivo
         </button>
         {error && <div className="error">{error}</div>}
         {notice && <div className="notice">{notice}</div>}
@@ -466,8 +475,9 @@ export default function App() {
             onResumeInDesktop={resumeInDesktop}
             onDelete={(id) => run(() => window.claudeMonitor.deleteSession(id))}
             onOpen={setOpenId}
-            onNewSession={() => nuevaEnTerminal()}
-            onNewSessionInDesktop={() => openDesktopIn()}
+            distros={distros}
+            onNewSession={(desde) => nuevaEnTerminal(undefined, desde)}
+            onNewSessionInDesktop={(desde) => openDesktopIn(undefined, desde)}
           />
         )}
       </main>

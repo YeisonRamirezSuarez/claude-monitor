@@ -14,18 +14,25 @@ const api: ClaudeMonitorApi = {
   cancelLogin: (id) => ipcRenderer.invoke('profiles:loginCancel', id),
   listSessions: () => ipcRenderer.invoke('sessions:list'),
   resumeSession: (id) => ipcRenderer.invoke('sessions:resume', id),
-  newSession: (cwd) => ipcRenderer.invoke('sessions:new', cwd),
+  newSession: (cwd, desde, distro) => ipcRenderer.invoke('sessions:new', cwd, desde, distro),
   deleteSession: (id) => ipcRenderer.invoke('sessions:delete', id),
   readTranscript: (id) => ipcRenderer.invoke('sessions:transcript', id),
   sessionTokens: () => ipcRenderer.invoke('sessions:tokens'),
   openChrome: (id) => ipcRenderer.invoke('chrome:open', id),
   openDesktop: (id) => ipcRenderer.invoke('desktop:open', id),
-  openDesktopIn: (cwd) => ipcRenderer.invoke('desktop:openIn', cwd),
+  openDesktopIn: (cwd, desde, distro) => ipcRenderer.invoke('desktop:openIn', cwd, desde, distro),
   resumeInDesktop: (id) => ipcRenderer.invoke('desktop:resume', id),
   protocolStatus: () => ipcRenderer.invoke('protocol:status'),
   claimProtocol: () => ipcRenderer.invoke('protocol:claim'),
   releaseProtocol: () => ipcRenderer.invoke('protocol:release'),
-  readLogs: (profileId) => ipcRenderer.invoke('logs:read', profileId)
+  readLogs: (profileId) => ipcRenderer.invoke('logs:read', profileId),
+  oficina: () => ipcRenderer.invoke('oficina:estado'),
+  oficinaPixel: () => ipcRenderer.invoke('oficina:pixel'),
+  abrirOficina: () => ipcRenderer.invoke('oficina:abrir'),
+  mapaPixel: () => ipcRenderer.invoke('oficina:mapaPixel'),
+  equipo: (sessionId) => ipcRenderer.invoke('oficina:equipo', sessionId),
+  nombrar: (clave, nombre, nota) => ipcRenderer.invoke('oficina:nombrar', clave, nombre, nota),
+  conversacion: (sessionId, agentId) => ipcRenderer.invoke('oficina:conversacion', sessionId, agentId)
 };
 
 contextBridge.exposeInMainWorld('claudeMonitor', api);
