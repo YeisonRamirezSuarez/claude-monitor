@@ -1,0 +1,2595 @@
+diff --git a/esbuild.js b/esbuild.js
+index bf4239a..00435ae 100644
+--- a/esbuild.js
++++ b/esbuild.js
+@@ -138,7 +138,8 @@ async function buildCli() {
+     sourcemap: !production,
+     platform: 'node',
+     outfile: 'dist/cli.js',
+-    external: ['fastify', '@fastify/websocket', '@fastify/static', '@fastify/cors'],
++    // claude-monitor: todo adentro, sin node_modules al lado (el portable de Electron los pierde).
++    external: [],
+     define: versionDefine,
+     logLevel: 'silent',
+   });
+diff --git a/scripts/claude-monitor-kenney.cjs b/scripts/claude-monitor-kenney.cjs
+new file mode 100644
+index 0000000..a9e5337
+--- /dev/null
++++ b/scripts/claude-monitor-kenney.cjs
+@@ -0,0 +1,119 @@
++// Local patch (claude-monitor): imports furniture from Kenney's "Roguelike
++// Indoors" pack (CC0 1.0 — https://kenney.nl/assets/roguelike-indoors) into
++// webview-ui/public/assets/furniture/KN_*/, one folder + manifest per item,
++// so the "edificio" layout can have what the stock set lacks: meeting tables,
++// a kitchen, armchairs, a piano, floor lamps.
++//
++//   node scripts/claude-monitor-kenney.cjs <path to roguelikeIndoor_transparent.png>
++//
++// The sheet is a grid of 16×16 tiles with a 1 px margin.
++const fs = require('fs');
++const path = require('path');
++const { PNG } = require('pngjs');
++
++const sheetPath = process.argv[2];
++if (!sheetPath) throw new Error('usage: node scripts/claude-monitor-kenney.cjs <roguelikeIndoor_transparent.png>');
++const sheet = PNG.sync.read(fs.readFileSync(sheetPath));
++const OUT = path.join(__dirname, '..', 'webview-ui', 'public', 'assets', 'furniture');
++
++function crop(c, r, w, h) {
++  const out = new PNG({ width: w * 16, height: h * 16 });
++  for (let tr = 0; tr < h; tr++)
++    for (let tc = 0; tc < w; tc++)
++      for (let y = 0; y < 16; y++)
++        for (let x = 0; x < 16; x++) {
++          const si = (((r + tr) * 17 + y) * sheet.width + (c + tc) * 17 + x) * 4;
++          const di = ((tr * 16 + y) * out.width + tc * 16 + x) * 4;
++          for (let k = 0; k < 4; k++) out.data[di + k] = sheet.data[si + k];
++        }
++  return out;
++}
++
++const base = (id, name, category, w, h, extra = {}) => ({
++  id,
++  name,
++  category,
++  type: 'asset',
++  file: `${id}.png`,
++  width: w * 16,
++  height: h * 16,
++  footprintW: w,
++  footprintH: h,
++  canPlaceOnWalls: false,
++  canPlaceOnSurfaces: false,
++  backgroundTiles: 0,
++  ...extra,
++});
++
++// [id, name, category, sheet col, row, w, h, extra manifest fields]
++const ITEMS = [
++  ['KN_TABLE_LONG', 'Mesa larga (Kenney)', 'desks', 16, 8, 3, 1],
++  ['KN_TABLE_OVAL', 'Mesa ovalada (Kenney)', 'desks', 19, 8, 2, 1],
++  ['KN_TABLE_ROUND', 'Mesa redonda (Kenney)', 'desks', 7, 0, 1, 1],
++  ['KN_SOFA_ARMCHAIR', 'Sillón (Kenney)', 'chairs', 14, 9, 1, 1],
++  ['KN_COUNTER', 'Mueble de cocina (Kenney)', 'misc', 0, 12, 1, 1],
++  ['KN_SINK', 'Fregadero (Kenney)', 'misc', 8, 12, 1, 1],
++  ['KN_STOVE', 'Cocina (Kenney)', 'misc', 14, 14, 2, 2],
++  ['KN_FRIDGE', 'Nevera (Kenney)', 'misc', 11, 15, 1, 2, { backgroundTiles: 1 }],
++  ['KN_PIANO', 'Piano (Kenney)', 'decor', 23, 8, 2, 2, { backgroundTiles: 1 }],
++  ['KN_PLANT', 'Planta (Kenney)', 'decor', 16, 0, 1, 1],
++  ['KN_LAMP', 'Lámpara de pie (Kenney)', 'decor', 19, 3, 1, 3, { backgroundTiles: 2 }],
++];
++
++for (const [id, name, category, c, r, w, h, extra] of ITEMS) {
++  const dir = path.join(OUT, id);
++  fs.mkdirSync(dir, { recursive: true });
++  fs.writeFileSync(path.join(dir, `${id}.png`), PNG.sync.write(crop(c, r, w, h)));
++  fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(base(id, name, category, w, h, extra), null, 2) + '\n');
++}
++
++// Meeting chairs: one rotation group (front / back / side, side mirrored).
++{
++  const id = 'KN_CHAIR';
++  const dir = path.join(OUT, id);
++  fs.mkdirSync(dir, { recursive: true });
++  const members = [
++    ['KN_CHAIR_FRONT', 0, 2, 'front'],
++    ['KN_CHAIR_BACK', 1, 2, 'back'],
++    ['KN_CHAIR_SIDE', 2, 2, 'side'],
++  ].map(([mid, c, r, orientation]) => {
++    fs.writeFileSync(path.join(dir, `${mid}.png`), PNG.sync.write(crop(c, r, 1, 1)));
++    return {
++      type: 'asset',
++      id: mid,
++      file: `${mid}.png`,
++      width: 16,
++      height: 16,
++      footprintW: 1,
++      footprintH: 1,
++      orientation,
++      ...(orientation === 'side' ? { mirrorSide: true } : {}),
++    };
++  });
++  fs.writeFileSync(
++    path.join(dir, 'manifest.json'),
++    JSON.stringify(
++      {
++        id,
++        name: 'Silla de reunión (Kenney)',
++        category: 'chairs',
++        type: 'group',
++        groupType: 'rotation',
++        rotationScheme: '3-way-mirror',
++        canPlaceOnWalls: false,
++        canPlaceOnSurfaces: false,
++        backgroundTiles: 0,
++        members,
++      },
++      null,
++      2,
++    ) + '\n',
++  );
++}
++
++fs.writeFileSync(
++  path.join(OUT, '..', 'KENNEY-LICENSE.txt'),
++  'KN_* furniture: "Roguelike Indoors" by Kenney (www.kenney.nl), CC0 1.0 Universal.\n' +
++    'https://kenney.nl/assets/roguelike-indoors — free to use, credit appreciated.\n',
++);
++console.log(`${ITEMS.length + 1} Kenney items written to ${OUT}`);
+diff --git a/scripts/claude-monitor-layout.mjs b/scripts/claude-monitor-layout.mjs
+new file mode 100644
+index 0000000..a4b5d87
+--- /dev/null
++++ b/scripts/claude-monitor-layout.mjs
+@@ -0,0 +1,187 @@
++// Local patch (claude-monitor): generates the "edificio" office layout — one
++// building with themed rooms around a central hallway whose door is at the
++// bottom: Despacho (leads), Trabajo (sub-agents), Biblioteca (thinking),
++// Descanso (kitchen + sofas: resting), Reuniones (where agents that talk meet).
++// Furniture: the stock set plus the KN_* items imported from Kenney's CC0
++// "Roguelike Indoors" (scripts/claude-monitor-kenney.cjs). Rugs are the
++// engine's own carpet layer (walkable, colorized).
++//
++//   node scripts/claude-monitor-layout.mjs > webview-ui/public/assets/claude-monitor-layout.json
++//
++// Wall-mounted furniture sits on the wall row (its bottom tile on the wall),
++// the same way the bundled default layout does it.
++
++const W = 31;
++const H = 27;
++const VOID = 255;
++const WALL = 0;
++const WOOD = 7; // floor pattern ids from assets/floors
++const TILE = 1;
++const MARBLE = 9;
++
++const COLORS = {
++  wall: { h: 214, s: 30, b: -100, c: -55 },
++  despacho: { h: 22, s: 45, b: -58, c: -80 },
++  trabajo: { h: 210, s: 8, b: -30, c: -70 },
++  hall: { h: 215, s: 6, b: -45, c: -20 },
++  biblioteca: { h: 28, s: 45, b: -40, c: -85 },
++  descanso: { h: 32, s: 50, b: -28, c: -85 },
++  reuniones: { h: 30, s: 42, b: -33, c: -85 },
++};
++const rug = (h, s, b) => ({ h, s, b, c: 0, colorize: true });
++const RUGS = {
++  navy: { variant: 0, color: rug(222, 45, -35), accentColor: rug(40, 70, 15) },
++  teal: { variant: 1, color: rug(190, 40, -30), accentColor: rug(45, 60, 20) },
++  wine: { variant: 2, color: rug(350, 45, -35), accentColor: rug(40, 65, 15) },
++  hall: { variant: 0, color: rug(220, 15, -50), accentColor: rug(215, 10, -25) },
++};
++
++const tiles = new Array(W * H).fill(VOID);
++const tileColors = new Array(W * H).fill(null);
++const areaTiles = new Array(W * H).fill(null);
++const carpetTiles = new Array(W * H).fill(null);
++const at = (c, r) => r * W + c;
++
++function fill(c0, r0, c1, r1, type, color, area = null) {
++  for (let r = r0; r <= r1; r++) {
++    for (let c = c0; c <= c1; c++) {
++      tiles[at(c, r)] = type;
++      tileColors[at(c, r)] = type === WALL ? COLORS.wall : color;
++      areaTiles[at(c, r)] = type === WALL ? null : area;
++    }
++  }
++}
++const wall = (c0, r0, c1, r1) => fill(c0, r0, c1, r1, WALL, null);
++const door = (c, r, color, area = null) => fill(c, r, c, r, MARBLE, color, area);
++function carpet(c0, r0, c1, r1, style) {
++  for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) carpetTiles[at(c, r)] = { ...style };
++}
++
++// Shell
++wall(0, 1, W - 1, H - 1);
++// Rooms (interiors)
++fill(1, 2, 14, 10, WOOD, COLORS.despacho, 'Despacho');
++fill(16, 2, 29, 10, TILE, COLORS.trabajo, 'Trabajo');
++fill(12, 12, 18, 25, MARBLE, COLORS.hall, 'Pasillo');
++fill(1, 12, 10, 17, WOOD, COLORS.biblioteca, 'Biblioteca');
++fill(1, 19, 10, 25, WOOD, COLORS.descanso, 'Descanso');
++fill(20, 12, 29, 25, WOOD, COLORS.reuniones, 'Reuniones');
++// Doors between rooms and the hallway, and the entrance at the bottom
++door(13, 11, COLORS.hall, 'Pasillo');
++door(17, 11, COLORS.hall, 'Pasillo');
++door(11, 15, COLORS.hall, 'Pasillo');
++door(11, 22, COLORS.hall, 'Pasillo');
++door(19, 18, COLORS.hall, 'Pasillo');
++door(15, H - 1, COLORS.hall, 'Pasillo');
++
++// Rugs
++carpet(2, 3, 12, 9, RUGS.navy); // under the leads' desks
++carpet(2, 14, 9, 16, RUGS.teal); // reading corner
++carpet(2, 21, 9, 24, RUGS.wine); // lounge
++carpet(21, 13, 28, 24, RUGS.navy); // meeting room
++carpet(14, 13, 16, 25, RUGS.hall); // hallway runner to the door
++
++let n = 0;
++const furniture = [];
++const put = (type, col, row) => furniture.push({ uid: `cm-edificio-${++n}`, type, col, row });
++
++// ── Despacho: where the leads (main agents) sit — two rows of three ──
++put('DOUBLE_BOOKSHELF', 1, 0);
++put('LARGE_PAINTING', 6, 0);
++put('CLOCK', 10, 0);
++put('HANGING_PLANT', 13, 0);
++for (const row of [3, 7]) {
++  for (const col of [2, 6, 10]) {
++    put('DESK_FRONT', col, row);
++    put('PC_FRONT_OFF', col + 1, row);
++    put('COFFEE', col + 2, row + 1);
++    put('CUSHIONED_CHAIR_BACK', col + 1, row + 2);
++  }
++}
++put('KN_LAMP', 1, 3);
++put('KN_PLANT', 14, 2);
++put('KN_PLANT', 1, 9);
++put('KN_PLANT', 14, 9);
++
++// ── Trabajo: where the sub-agents work — two rows of four desks ──
++put('WHITEBOARD', 17, 0);
++put('LARGE_PAINTING', 22, 0);
++put('CLOCK', 26, 0);
++put('SMALL_PAINTING', 28, 0);
++for (const row of [3, 7]) {
++  for (const col of [16, 19, 22, 25]) {
++    put('DESK_FRONT', col, row);
++    put('PC_FRONT_OFF', col + 1, row);
++    put('CUSHIONED_BENCH', col + 1, row + 2);
++  }
++}
++put('PLANT', 29, 3);
++put('PLANT', 29, 7);
++
++// ── Biblioteca: a wall of shelves to stand and read at ──
++for (const col of [1, 3, 5, 7]) put('DOUBLE_BOOKSHELF', col, 12);
++put('BOOKSHELF', 9, 12);
++put('KN_LAMP', 1, 15);
++put('KN_LAMP', 10, 15);
++put('KN_PLANT', 5, 17);
++
++// ── Descanso: kitchen along the top, sofas, a piano ──
++put('KN_FRIDGE', 1, 19);
++put('KN_STOVE', 2, 19);
++put('KN_COUNTER', 4, 19);
++put('KN_SINK', 5, 19);
++put('KN_COUNTER', 6, 19);
++put('KN_COUNTER', 7, 19);
++put('SOFA_FRONT', 3, 21);
++put('SOFA_SIDE', 2, 22);
++put('COFFEE_TABLE', 3, 22);
++put('COFFEE', 3, 23);
++put('SOFA_SIDE:left', 5, 22);
++put('SOFA_BACK', 3, 24);
++put('KN_TABLE_ROUND', 8, 22);
++put('KN_SOFA_ARMCHAIR', 8, 21);
++put('KN_SOFA_ARMCHAIR', 8, 23);
++put('KN_PIANO', 9, 19);
++put('KN_PLANT', 10, 25);
++
++// ── Reuniones: two long meeting tables with chairs all around ──
++for (const row of [15, 21]) {
++  put('KN_TABLE_LONG', 23, row);
++  for (const col of [23, 24, 25]) {
++    put('KN_CHAIR_FRONT', col, row - 1); // above the table, facing it
++    put('KN_CHAIR_BACK', col, row + 1); // below, facing it
++  }
++  put('KN_CHAIR_SIDE', 22, row);
++  put('KN_CHAIR_SIDE:left', 26, row);
++}
++put('LARGE_PLANT', 28, 12);
++put('KN_PLANT', 20, 12);
++put('KN_PLANT', 20, 25);
++put('KN_LAMP', 29, 22);
++
++// ── Pasillo ──
++put('PLANT', 12, 13);
++put('PLANT', 18, 13);
++put('PLANT_2', 12, 23);
++put('PLANT_2', 18, 23);
++
++const layout = {
++  version: 1,
++  cols: W,
++  rows: H,
++  layoutRevision: 1,
++  tiles,
++  tileColors,
++  furniture,
++  carpetTiles,
++  areas: [
++    { label: 'Despacho', color: '#facc15' },
++    { label: 'Trabajo', color: '#38bdf8' },
++    { label: 'Biblioteca', color: '#a78bfa' },
++    { label: 'Descanso', color: '#fb7185' },
++    { label: 'Reuniones', color: '#34d399' },
++    { label: 'Pasillo', color: '#94a3b8' },
++  ],
++  areaTiles,
++};
++process.stdout.write(JSON.stringify(layout));
+diff --git a/server/src/claudeMonitorNames.ts b/server/src/claudeMonitorNames.ts
+new file mode 100644
+index 0000000..c97ab97
+--- /dev/null
++++ b/server/src/claudeMonitorNames.ts
+@@ -0,0 +1,60 @@
++// Local patch (claude-monitor): the label each character shows.
++//
++// 1. The name the user set in claude-monitor (`nombres.json`: sessionId ->
++//    { nombre, nota }), read on every lookup so a rename shows up the next
++//    time the webview asks for the agent list.
++// 2. Otherwise the session's own name from Claude Code's live-session registry
++//    (`<configDir>/sessions/<pid>.json`, e.g. "vendigmachine-fa"): several
++//    sessions in the same folder would otherwise all read "VendigMachine".
++import * as fs from 'fs';
++import * as path from 'path';
++
++const MONITOR_DIR = path.join(process.env.APPDATA || '', 'claude-monitor');
++const NAMES_FILE = path.join(MONITOR_DIR, 'nombres.json');
++const REGISTRY_TTL_MS = 10_000;
++
++let registry: { at: number; names: Map<string, string> } | null = null;
++
++function sessionRegistryNames(): Map<string, string> {
++  if (registry && Date.now() - registry.at < REGISTRY_TTL_MS) return registry.names;
++  const names = new Map<string, string>();
++  const dirs = [path.join(process.env.USERPROFILE || '', '.claude')];
++  try {
++    const profiles = JSON.parse(fs.readFileSync(path.join(MONITOR_DIR, 'profiles.json'), 'utf8')).profiles || [];
++    for (const p of profiles) if (typeof p.configDir === 'string') dirs.push(p.configDir);
++  } catch {
++    /* no claude-monitor */
++  }
++  for (const dir of dirs) {
++    let files: string[] = [];
++    try {
++      files = fs.readdirSync(path.join(dir, 'sessions')).filter((f) => /^\d+\.json$/.test(f));
++    } catch {
++      continue;
++    }
++    for (const f of files) {
++      try {
++        const s = JSON.parse(fs.readFileSync(path.join(dir, 'sessions', f), 'utf8'));
++        if (typeof s.sessionId === 'string' && typeof s.name === 'string' && s.name.trim()) {
++          names.set(s.sessionId, s.name.trim());
++        }
++      } catch {
++        /* half-written or foreign file */
++      }
++    }
++  }
++  registry = { at: Date.now(), names };
++  return names;
++}
++
++export function claudeMonitorName(sessionId: string | undefined): string | undefined {
++  if (!sessionId) return undefined;
++  try {
++    const all = JSON.parse(fs.readFileSync(NAMES_FILE, 'utf8')) as Record<string, { nombre?: unknown }>;
++    const nombre = all[sessionId]?.nombre;
++    if (typeof nombre === 'string' && nombre.trim()) return nombre.trim();
++  } catch {
++    /* no names yet */
++  }
++  return sessionRegistryNames().get(sessionId);
++}
+diff --git a/server/src/claudeMonitorWorkflows.ts b/server/src/claudeMonitorWorkflows.ts
+new file mode 100644
+index 0000000..c38d83b
+--- /dev/null
++++ b/server/src/claudeMonitorWorkflows.ts
+@@ -0,0 +1,131 @@
++// Local patch (claude-monitor): agents of a Workflow run (multi-agent
++// orchestration: code-review, audits…) as sub-agents of the session that
++// launched it.
++//
++// They are not Agent-tool spawns: no tool_use id, no sidecar toolUseId. Their
++// transcripts live one level deeper, under
++//   <projectDir>/<sessionId>/subagents/workflows/<runId>/agent-<id>.jsonl
++// with a `.meta.json` (description = the agent's label, workflowPhase) and a
++// `journal.jsonl` for the whole run: `started` / `result` per agentId. So an
++// agent is running from its `started` until its `result`.
++//
++// Running ones are watched through the same shadow-store SubagentWatch the
++// stock code uses for background spawns, keyed by a synthetic spawn id
++// `wf:<runId>:<agentId>` — the webview then creates and animates the
++// sub-character from the translated subagentToolStart messages. When the
++// result lands (or the transcript goes quiet for long), a subagentClear walks
++// it out.
++import * as fs from 'fs';
++import * as path from 'path';
++
++import type { AgentStateStore } from './agentStateStore.js';
++import type { SubagentWatch } from './subagentWatch.js';
++import type { AgentState } from './types.js';
++
++/** A workflow agent whose transcript has been silent this long is gone even
++ *  without a result (the run was stopped). */
++const STALE_MS = 15 * 60_000;
++
++interface Journal {
++  offset: number;
++  rest: string;
++  started: Set<string>;
++  done: Set<string>;
++}
++const journals = new Map<string, Journal>();
++/** "leadId:spawnId" of the workflow agents currently shown. */
++const shown = new Set<string>();
++
++export const workflowSpawnId = (runId: string, agentId: string) => `wf:${runId}:${agentId}`;
++
++/** Read only what was appended since last time: results make journals big. */
++function readJournal(file: string): Journal {
++  let j = journals.get(file);
++  if (!j) {
++    j = { offset: 0, rest: '', started: new Set(), done: new Set() };
++    journals.set(file, j);
++  }
++  let size = 0;
++  try {
++    size = fs.statSync(file).size;
++  } catch {
++    return j;
++  }
++  if (size < j.offset) {
++    j.offset = 0;
++    j.rest = '';
++    j.started.clear();
++    j.done.clear();
++  }
++  if (size === j.offset) return j;
++  const fd = fs.openSync(file, 'r');
++  try {
++    const buf = Buffer.alloc(size - j.offset);
++    fs.readSync(fd, buf, 0, buf.length, j.offset);
++    j.offset = size;
++    const lines = (j.rest + buf.toString('utf8')).split('\n');
++    j.rest = lines.pop() ?? '';
++    for (const line of lines) {
++      // Cheap filter first: result lines carry whole reports.
++      if (!line.includes('"type":"started"') && !line.includes('"type":"result"')) continue;
++      try {
++        const e = JSON.parse(line) as { type?: string; agentId?: string };
++        if (typeof e.agentId !== 'string') continue;
++        if (e.type === 'started') j.started.add(e.agentId);
++        if (e.type === 'result') j.done.add(e.agentId);
++      } catch {
++        /* partial line */
++      }
++    }
++  } finally {
++    fs.closeSync(fd);
++  }
++  return j;
++}
++
++function recent(file: string): boolean {
++  try {
++    return Date.now() - fs.statSync(file).mtimeMs < STALE_MS;
++  } catch {
++    return false;
++  }
++}
++
++/** Show the lead's running workflow agents; clear the ones that finished. */
++export function scanWorkflowAgents(
++  leadId: number,
++  lead: AgentState,
++  agents: AgentStateStore,
++  subagentWatch: SubagentWatch | null,
++): void {
++  if (!subagentWatch || !lead.projectDir || !lead.sessionId) return;
++  const root = path.join(lead.projectDir, lead.sessionId, 'subagents', 'workflows');
++  let runs: string[] = [];
++  try {
++    runs = fs.readdirSync(root);
++  } catch {
++    runs = [];
++  }
++  const alive = new Set<string>();
++  for (const runId of runs) {
++    const dir = path.join(root, runId);
++    const journal = readJournal(path.join(dir, 'journal.jsonl'));
++    for (const agentId of journal.started) {
++      if (journal.done.has(agentId)) continue;
++      const jsonlPath = path.join(dir, `agent-${agentId}.jsonl`);
++      if (!recent(jsonlPath)) continue;
++      const spawnId = workflowSpawnId(runId, agentId);
++      alive.add(spawnId);
++      if (shown.has(`${leadId}:${spawnId}`) || subagentWatch.isWatching(jsonlPath)) continue;
++      shown.add(`${leadId}:${spawnId}`);
++      subagentWatch.watch(lead, leadId, { jsonlPath, toolUseId: spawnId });
++    }
++  }
++  for (const key of [...shown]) {
++    const [id, spawnId] = [Number(key.slice(0, key.indexOf(':'))), key.slice(key.indexOf(':') + 1)];
++    if (id !== leadId || alive.has(spawnId)) continue;
++    shown.delete(key);
++    subagentWatch.removeBySpawn(leadId, spawnId);
++    agents.broadcast({ type: 'subagentClear', id: leadId, parentToolId: spawnId });
++  }
++}
+diff --git a/server/src/cli.ts b/server/src/cli.ts
+index 0885dd7..a6d981a 100644
+--- a/server/src/cli.ts
++++ b/server/src/cli.ts
+@@ -244,7 +244,8 @@ async function main(): Promise<void> {
+     // runtime's single hooksEnabled ref follows the Claude provider until the
+     // scanners grow per-provider awareness alongside the Settings UI.
+     runtime.hooksEnabled.current = getHooksEnabled(claudeProvider.id);
+-    runtime.watchAllSessions.current = adapter.getSetting('pixel-agents.watchAllSessions', false);
++    // claude-monitor patch: on by default — accounts without hooks are only found this way.
++    runtime.watchAllSessions.current = adapter.getSetting('pixel-agents.watchAllSessions', true);
+ 
+     // Install hooks on startup if the persisted setting says so — gated on the
+     // one-time consent to modify ~/.claude/settings.json.
+diff --git a/server/src/clientMessageHandler.ts b/server/src/clientMessageHandler.ts
+index 5a64b72..109d767 100644
+--- a/server/src/clientMessageHandler.ts
++++ b/server/src/clientMessageHandler.ts
+@@ -11,6 +11,7 @@ import {
+   setHooksEnabled,
+   writeConfig,
+ } from './configPersistence.js';
++import { claudeMonitorName } from './claudeMonitorNames.js';
+ import { HUE_SHIFT_MAX_DEG, PALETTE_COUNT } from './constants.js';
+ import { readLayoutFromFile, writeLayoutToFile } from './layoutPersistence.js';
+ import type { ConsentEffects } from './providers/hook/consentExecutor.js';
+@@ -404,7 +405,8 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
+ 
+   // 4. Settings (from adapter, with sensible defaults when adapter is absent)
+   const cfg = readConfig();
+-  const watchAllSessions = adapter?.getSetting(KEY_WATCH_ALL_SESSIONS, false) ?? false;
++  // claude-monitor patch: on by default (see cli.ts).
++  const watchAllSessions = adapter?.getSetting(KEY_WATCH_ALL_SESSIONS, true) ?? true;
+   // settingsLoaded.hooksEnabled stays a single boolean carrying the CLAUDE
+   // provider's preference until the Settings UI grows a per-provider list —
+   // its sole webview reader is the hooks tooltip gate.
+@@ -485,8 +487,9 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
+   const agentMeta: Record<number, { palette?: number; hueShift?: number; seatId?: string }> = {};
+   for (const [id, agent] of store) {
+     agentIds.push(id);
+-    if (agent.folderName) {
+-      folderNames[id] = agent.folderName;
++    const label = claudeMonitorName(agent.sessionId) ?? agent.folderName;
++    if (label) {
++      folderNames[id] = label;
+     }
+     if (agent.isExternal) {
+       externalAgents[id] = true;
+diff --git a/server/src/fileWatcher.ts b/server/src/fileWatcher.ts
+index adb55b4..5051d91 100644
+--- a/server/src/fileWatcher.ts
++++ b/server/src/fileWatcher.ts
+@@ -45,6 +45,7 @@ import {
+ import { seedContextUsage } from './contextUsage.js';
+ import type { DismissalTracker } from './dismissalTracker.js';
+ import { assignPaletteIfNeeded } from './paletteAssigner.js';
++import { scanWorkflowAgents } from './claudeMonitorWorkflows.js';
+ import { pathsMatch } from './pathKey.js';
+ import type { SubagentWatch } from './subagentWatch.js';
+ import { cancelPermissionTimer, cancelWaitingTimer, clearAgentActivity } from './timerManager.js';
+@@ -790,6 +791,18 @@ export function scanForTeammateFiles(
+  *  foreground spawn tools (Agent run_in_background:false — same sidecar shape
+  *  on current harnesses, closes with its tool_result). Sidecars matching any
+  *  of these belong to the background-agent flow, not teammate discovery. */
++/** claude-monitor patch: how recent a sub-agent transcript write must be to
++ *  count as a running spawn we missed the launch of. */
++const RECENT_SPAWN_MS = 3 * 60_000;
++
++function writtenWithin(file: string, ms: number): boolean {
++  try {
++    return Date.now() - fs.statSync(file).mtimeMs < ms;
++  } catch {
++    return false;
++  }
++}
++
+ function liveSpawnToolIds(lead: AgentState): Set<string> {
+   const ids = new Set(lead.backgroundAgentToolIds);
+   for (const toolId of lead.activeToolIds) {
+@@ -838,10 +851,24 @@ export function scanForBackgroundAgentFiles(
+   if (!teamProvider) return;
+   const lead = agents.get(leadId);
+   if (!lead || !lead.sessionId || !lead.projectDir) return;
++  // Local patch (claude-monitor): Workflow agents, which the sidecar scan
++  // below never sees (they live under subagents/workflows/<runId>/).
++  scanWorkflowAgents(leadId, lead, agents, subagentWatch);
++
+   const liveSpawnIds = liveSpawnToolIds(lead);
+-  if (liveSpawnIds.size === 0) return;
+ 
+   const entries = teamProvider.discoverTeammates(lead.projectDir, lead.sessionId);
++  // Local patch (claude-monitor): a spawn launched before this server started
++  // watching the lead (the office opened later, or it restarted) never showed
++  // up in the lead's parsed transcript, so its sub-agent stayed invisible for
++  // its whole run. Adopt any sidecar transcript written to recently as live.
++  for (const entry of entries) {
++    if (!entry.toolUseId || liveSpawnIds.has(entry.toolUseId)) continue;
++    if (!writtenWithin(entry.jsonlPath, RECENT_SPAWN_MS)) continue;
++    lead.backgroundAgentToolIds.add(entry.toolUseId);
++    liveSpawnIds.add(entry.toolUseId);
++  }
++  if (liveSpawnIds.size === 0) return;
+   for (const entry of entries) {
+     if (!entry.toolUseId || !liveSpawnIds.has(entry.toolUseId)) continue;
+ 
+diff --git a/server/src/httpServer.ts b/server/src/httpServer.ts
+index 9e5ef37..90b9f8f 100644
+--- a/server/src/httpServer.ts
++++ b/server/src/httpServer.ts
+@@ -12,6 +12,7 @@ import type {
+   ReloadAssetsSideEffect,
+   SetHooksEnabledSideEffect,
+ } from './clientMessageHandler.js';
++import { claudeMonitorName } from './claudeMonitorNames.js';
+ import { handleClientMessage } from './clientMessageHandler.js';
+ import {
+   HOOK_API_PREFIX,
+@@ -85,6 +86,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Http
+   // ── Routes ──────────────────────────────────────────────────
+ 
+   registerHealthRoute(app);
++  registerClaudeMonitorRoute(app, options.store);
+   registerHookRoute(app, options);
+   registerWebSocketRoute(app, options);
+ 
+@@ -107,6 +109,14 @@ function registerHealthRoute(app: FastifyInstance): void {
+   }));
+ }
+ 
++// Local patch (claude-monitor): which session each character is, so a click in
++// the embedded office can open that session's conversation in claude-monitor.
++function registerClaudeMonitorRoute(app: FastifyInstance, store: AgentStateStore): void {
++  app.get('/api/claude-monitor/agents', async () =>
++    [...store.values()].map((a) => ({ id: a.id, sessionId: a.sessionId, jsonlFile: a.jsonlFile })),
++  );
++}
++
+ // ── Hook Events ────────────────────────────────────────────────
+ 
+ function registerHookRoute(app: FastifyInstance, options: HttpServerOptions): void {
+@@ -173,7 +183,7 @@ function registerWebSocketRoute(app: FastifyInstance, options: HttpServerOptions
+       safeSend(socket, {
+         type: 'agentCreated',
+         id,
+-        folderName: agent.folderName,
++        folderName: claudeMonitorName(agent.sessionId) ?? agent.folderName,
+         isExternal: agent.isExternal || undefined,
+         isTeammate: agent.leadAgentId !== undefined || undefined,
+         teammateName: agent.agentName,
+diff --git a/server/src/pathKey.ts b/server/src/pathKey.ts
+index a84cebe..fac7dbd 100644
+--- a/server/src/pathKey.ts
++++ b/server/src/pathKey.ts
+@@ -1,3 +1,4 @@
++import * as fs from 'fs';
+ import * as path from 'path';
+ 
+ /**
+@@ -18,10 +19,34 @@ import * as path from 'path';
+  */
+ export function toPathKey(p: string): string {
+   if (!p) return p;
+-  const resolved = path.resolve(p);
++  const resolved = realAncestor(path.resolve(p));
+   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+ }
+ 
++// Local patch (claude-monitor): its accounts share one projects/ through
++// junctions, so the same transcript also arrives as
++// `<account>\projects\...` (hooks) and `~\.claude\projects\...` (scanner).
++// Resolve the deepest existing ancestor to its real path so both spellings
++// collapse to one key; the file itself may not exist yet.
++const realDirs = new Map<string, string>();
++function realAncestor(p: string): string {
++  let dir = path.dirname(p);
++  const rest = [path.basename(p)];
++  while (dir !== path.dirname(dir)) {
++    const cached = realDirs.get(dir);
++    if (cached) return path.join(cached, ...[...rest].reverse());
++    try {
++      const real = fs.realpathSync.native(dir);
++      realDirs.set(dir, real);
++      return path.join(real, ...[...rest].reverse());
++    } catch {
++      rest.push(path.basename(dir));
++      dir = path.dirname(dir);
++    }
++  }
++  return p;
++}
++
+ /** True when both paths point at the same file/directory (case-insensitive on Windows). */
+ export function pathsMatch(left: string, right: string): boolean {
+   return toPathKey(left) === toPathKey(right);
+diff --git a/server/src/providers/hook/claude/claude.ts b/server/src/providers/hook/claude/claude.ts
+index 1f7bbe9..d14c0fd 100644
+--- a/server/src/providers/hook/claude/claude.ts
++++ b/server/src/providers/hook/claude/claude.ts
+@@ -74,29 +74,52 @@ export function formatToolStatus(toolName: string, input?: unknown): string {
+ 
+ // ── Session dir + launch command ──
+ 
+-function getSessionDirs(workspacePath: string): string[] {
+-  // Claude stores sessions at ~/.claude/projects/<workspace-path-with-dashes>/.
+-  const dirName = normalizeProjectPath(workspacePath);
+-  const projectDir = path.join(os.homedir(), '.claude', 'projects', dirName);
+-
+-  // Try exact match first.
+-  if (fs.existsSync(projectDir)) return [projectDir];
+-
+-  // Case-insensitive fallback for Windows: drive letter casing can differ
+-  // between what VS Code gives us (e.g. "c:\...") and Claude's encoding ("C:\...").
+-  const projectsRoot = path.join(os.homedir(), '.claude', 'projects');
++// Local patch (claude-monitor): also scan every claude-monitor profile, one
++// CLAUDE_CONFIG_DIR per account.
++function claudeConfigDirs(): string[] {
++  const dirs = [path.join(os.homedir(), '.claude')];
+   try {
+-    if (fs.existsSync(projectsRoot)) {
+-      const lowerDirName = dirName.toLowerCase();
+-      const match = fs.readdirSync(projectsRoot).find((c) => c.toLowerCase() === lowerDirName);
+-      if (match) return [path.join(projectsRoot, match)];
++    const file = path.join(process.env.APPDATA || '', 'claude-monitor', 'profiles.json');
++    for (const p of JSON.parse(fs.readFileSync(file, 'utf8')).profiles || []) {
++      const dir = typeof p.configDir === 'string' ? p.configDir : '';
++      if (dir && !dirs.some((d) => d.toLowerCase() === dir.toLowerCase())) dirs.push(dir);
+     }
+   } catch {
+-    /* ignore scan errors */
++    /* no claude-monitor */
+   }
++  return dirs;
++}
+ 
+-  // Return the expected path even if it doesn't exist yet (caller tolerates missing dirs).
+-  return [projectDir];
++function getSessionDirs(workspacePath: string): string[] {
++  // Claude stores sessions at <configDir>/projects/<workspace-path-with-dashes>/.
++  const dirName = normalizeProjectPath(workspacePath);
++  const lowerDirName = dirName.toLowerCase();
++  const seen = new Set<string>();
++  const dirs = claudeConfigDirs().map((cfg) => {
++    const projectsRoot = path.join(cfg, 'projects');
++    const projectDir = path.join(projectsRoot, dirName);
++    if (fs.existsSync(projectDir)) return projectDir;
++    // Case-insensitive fallback for Windows drive-letter casing.
++    try {
++      const match = fs.readdirSync(projectsRoot).find((c) => c.toLowerCase() === lowerDirName);
++      if (match) return path.join(projectsRoot, match);
++    } catch {
++      /* ignore scan errors */
++    }
++    return projectDir;
++  });
++  // Same junction dedupe as getAllSessionRoots.
++  return dirs.filter((dir) => {
++    let key = dir.toLowerCase();
++    try {
++      key = fs.realpathSync(dir).toLowerCase();
++    } catch {
++      /* not created yet: keep the literal path */
++    }
++    if (seen.has(key)) return false;
++    seen.add(key);
++    return true;
++  });
+ }
+ 
+ function buildLaunchCommand(
+@@ -112,7 +135,23 @@ function buildLaunchCommand(
+ /** Root that holds every Claude session across all workspaces. Used by the
+  *  global session scanner ("Watch All Sessions"). */
+ function getAllSessionRoots(): string[] {
+-  return [path.join(os.homedir(), '.claude', 'projects')];
++  // claude-monitor's Windows accounts share one projects/ through a junction:
++  // dedupe by real path or every session would be scanned once per account.
++  const seen = new Set<string>();
++  return claudeConfigDirs()
++    .map((cfg) => path.join(cfg, 'projects'))
++    .filter((dir) => {
++      let real = dir;
++      try {
++        real = fs.realpathSync(dir);
++      } catch {
++        return false;
++      }
++      const key = real.toLowerCase();
++      if (seen.has(key)) return false;
++      seen.add(key);
++      return true;
++    });
+ }
+ 
+ // ── normalizeHookEvent: the single Claude-specific normalization boundary ──
+diff --git a/webview-ui/src/App.tsx b/webview-ui/src/App.tsx
+index 68a2691..c6c4e01 100644
+--- a/webview-ui/src/App.tsx
++++ b/webview-ui/src/App.tsx
+@@ -1,3 +1,4 @@
++import { installClaudeMonitorBridge } from './claudeMonitorBridge.js';
+ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+ 
+ import { toMajorMinor } from './changelogData.js';
+@@ -40,6 +41,12 @@ const editorState = new EditorState();
+ // unbounded logs in a real user's session.
+ if (isE2E) installTestHooks(officeStateRef);
+ 
++// claude-monitor patch: listen to the embedding window (account filter, talks).
++installClaudeMonitorBridge(
++  () => getOfficeState(),
++  (id) => transport.send({ type: 'closeAgent', id }),
++);
++
+ function getOfficeState(): OfficeState {
+   if (!officeStateRef.current) {
+     officeStateRef.current = new OfficeState();
+@@ -238,6 +245,13 @@ function App() {
+     const meta = os.subagentMeta.get(agentId);
+     const focusId = meta ? meta.parentAgentId : agentId;
+     transport.send({ type: 'focusAgent', id: focusId });
++    // Local patch (claude-monitor): the embedding window opens the conversation.
++    if (window.parent !== window) {
++      window.parent.postMessage(
++        { type: 'claude-monitor:focus', agentId: focusId, parentToolId: meta?.parentToolId ?? null },
++        '*',
++      );
++    }
+   }, []);
+ 
+   const officeState = getOfficeState();
+diff --git a/webview-ui/src/claudeMonitorBridge.ts b/webview-ui/src/claudeMonitorBridge.ts
+new file mode 100644
+index 0000000..fb30337
+--- /dev/null
++++ b/webview-ui/src/claudeMonitorBridge.ts
+@@ -0,0 +1,92 @@
++// Local patch (claude-monitor): messages from the claude-monitor window that
++// embeds this office in an iframe. It knows things the office does not —
++// which account each session belongs to, and which sub-agent a SendMessage was
++// addressed to — and tells the engine.
++import type { OfficeState } from './office/engine/officeState.js';
++
++type Incoming =
++  /** Main agent ids to show (the account filter); null shows everyone. */
++  | { type: 'claude-monitor:visible'; ids: number[] | null }
++  /** A lead and one of its sub-agents talked. `toSub`: the lead wrote. */
++  | { type: 'claude-monitor:talk'; agentId: number; parentToolId: string; toSub: boolean }
++  /** claude-monitor saw this session's process end: close it (walks out). The
++   *  office only learns on its own through a SessionEnd hook, which accounts
++   *  without the hooks installed never send. */
++  | { type: 'claude-monitor:close'; id: number }
++  /** Focus (zoom in + follow) the lead, or its sub-agent when parentToolId is given. */
++  | { type: 'claude-monitor:focus'; agentId: number; parentToolId?: string | null }
++  | { type: 'claude-monitor:unfocus' }
++  /** The sub-agents claude-monitor sees still running for a lead (their spawn
++   *  ids). The office drops the ones that stay missing: a finished spawn whose
++   *  completion event never reached it stayed in the office forever. */
++  | { type: 'claude-monitor:subs'; agentId: number; alive: string[] }
++  /** What each agent is doing, as claude-monitor reads it (lead: parentToolId null). */
++  | {
++      type: 'claude-monitor:estados';
++      items: Array<{ agentId: number; parentToolId?: string | null; estado: string }>;
++    }
++  /** What each sub-agent is doing (its task), keyed like the sub-character. */
++  | { type: 'claude-monitor:labels'; items: Array<{ agentId: number; parentToolId: string; label: string }> };
++
++/** Consecutive reports a sub-agent must be missing from before it is let go
++ *  (claude-monitor reports every ~1.5 s; a just-launched spawn may not have
++ *  its sidecar yet). */
++const MISSES_TO_DROP = 4;
++const misses = new Map<string, number>();
++
++export function installClaudeMonitorBridge(
++  getOfficeState: () => OfficeState,
++  closeAgent: (id: number) => void,
++): void {
++  if (window.parent === window) return;
++  window.addEventListener('message', (e: MessageEvent) => {
++    if (e.source !== window.parent) return;
++    const msg = e.data as Incoming;
++    const os = getOfficeState();
++    if (msg?.type === 'claude-monitor:visible') {
++      os.cm.setVisible(Array.isArray(msg.ids) ? msg.ids.filter((n) => typeof n === 'number') : null);
++    } else if (msg?.type === 'claude-monitor:focus' && typeof msg.agentId === 'number') {
++      const id = msg.parentToolId ? os.getSubagentId(msg.agentId, String(msg.parentToolId)) : msg.agentId;
++      if (id !== null && os.selectedAgentId !== id) {
++        window.dispatchEvent(new CustomEvent('claude-monitor-focus', { detail: { id } }));
++      }
++    } else if (msg?.type === 'claude-monitor:unfocus') {
++      if (os.cameraFollowId !== null) window.dispatchEvent(new CustomEvent('claude-monitor-focus', { detail: { id: null } }));
++    } else if (msg?.type === 'claude-monitor:subs' && typeof msg.agentId === 'number' && Array.isArray(msg.alive)) {
++      const alive = new Set(msg.alive.map(String));
++      for (const meta of [...os.subagentMeta.values()]) {
++        if (meta.parentAgentId !== msg.agentId) continue;
++        const key = `${meta.parentAgentId}:${meta.parentToolId}`;
++        if (alive.has(meta.parentToolId)) {
++          misses.delete(key);
++          continue;
++        }
++        const n = (misses.get(key) ?? 0) + 1;
++        misses.set(key, n);
++        if (n >= MISSES_TO_DROP) {
++          misses.delete(key);
++          os.removeSubagent(meta.parentAgentId, meta.parentToolId); // reports, then walks out
++        }
++      }
++    } else if (msg?.type === 'claude-monitor:estados' && Array.isArray(msg.items)) {
++      for (const it of msg.items) {
++        if (typeof it?.agentId !== 'number' || typeof it.estado !== 'string') continue;
++        const id = it.parentToolId ? os.getSubagentId(it.agentId, String(it.parentToolId)) : it.agentId;
++        if (id !== null) os.cm.setExternalState(id, it.estado);
++      }
++    } else if (msg?.type === 'claude-monitor:close' && typeof msg.id === 'number') {
++      if (os.characters.has(msg.id)) closeAgent(msg.id);
++    } else if (msg?.type === 'claude-monitor:labels' && Array.isArray(msg.items)) {
++      for (const it of msg.items) {
++        if (typeof it?.agentId === 'number' && typeof it.label === 'string') {
++          os.cm.setSubagentLabel(it.agentId, String(it.parentToolId), it.label);
++        }
++      }
++    } else if (msg?.type === 'claude-monitor:talk' && typeof msg.agentId === 'number') {
++      const sub = os.getSubagentId(msg.agentId, String(msg.parentToolId));
++      if (sub === null) return;
++      if (msg.toSub) os.cm.talk(msg.agentId, sub);
++      else os.cm.talk(sub, msg.agentId);
++    }
++  });
++}
+diff --git a/webview-ui/src/hooks/useExtensionMessages.ts b/webview-ui/src/hooks/useExtensionMessages.ts
+index 29a1a6b..83d5305 100644
+--- a/webview-ui/src/hooks/useExtensionMessages.ts
++++ b/webview-ui/src/hooks/useExtensionMessages.ts
+@@ -289,6 +289,7 @@ export function useExtensionMessages(
+             os.setHeadless(id, true);
+           }
+         }
++        os.cm.arrive(id); // claude-monitor patch: walk in through the door
+         saveAgentSeats(os);
+       } else if (msg.type === 'agentClosed') {
+         const id = msg.id as number;
+@@ -373,6 +374,7 @@ export function useExtensionMessages(
+         const toolName = (msg.toolName as string | undefined) ?? extractToolName(status);
+         os.setAgentTool(id, toolName);
+         os.setAgentActive(id, true);
++        os.cm.toolStart(id, toolId, toolName, msg.runInBackground === true); // claude-monitor patch
+         // Don't clear the permission bubble if the hook already confirmed permission is needed
+         if (!permissionActive) {
+           os.clearPermissionBubble(id);
+@@ -401,7 +403,9 @@ export function useExtensionMessages(
+           (!runInBackground || !parentHasTeam)
+         ) {
+           const label = status.startsWith('Subtask:') ? status.slice('Subtask:'.length).trim() : '';
++          const isNew = os.getSubagentId(id, toolId) === null;
+           const subId = os.addSubagent(id, toolId);
++          if (isNew) os.cm.arriveSubagent(subId); // claude-monitor patch: walks in, greets its lead
+           setSubagentCharacters((prev) => {
+             if (prev.some((s) => s.id === subId)) return prev;
+             return [...prev, { id: subId, parentAgentId: id, parentToolId: toolId, label }];
+@@ -410,6 +414,7 @@ export function useExtensionMessages(
+       } else if (msg.type === 'agentToolDone') {
+         const id = msg.id as number;
+         const toolId = msg.toolId as string;
++        os.cm.toolDone(id, toolId); // claude-monitor patch
+         setAgentTools((prev) => {
+           const list = prev[id];
+           if (!list) return prev;
+@@ -468,6 +473,7 @@ export function useExtensionMessages(
+         }
+         os.setAgentTool(id, null);
+         os.clearPermissionBubble(id);
++        os.cm.toolsClear(id); // claude-monitor patch
+       } else if (msg.type === 'agentSelected') {
+         const id = msg.id as number;
+         setSelectedAgent(id);
+@@ -549,6 +555,7 @@ export function useExtensionMessages(
+         let subId = os.getSubagentId(id, parentToolId);
+         if (subId === null) {
+           subId = os.addSubagent(id, parentToolId);
++          os.cm.arriveSubagent(subId); // claude-monitor patch: walks in, meets its lead
+           const newSubId = subId;
+           setSubagentCharacters((prev) => {
+             if (prev.some((s) => s.id === newSubId)) return prev;
+@@ -562,10 +569,16 @@ export function useExtensionMessages(
+         const subToolName = extractToolName(status);
+         os.setAgentTool(subId, subToolName);
+         os.setAgentActive(subId, true);
++        // claude-monitor patch: track its tools; a SendMessage from a sub-agent
++        // is it reporting to its lead, so it walks over to talk.
++        os.cm.toolStart(subId, toolId, subToolName, false);
++        if (subToolName === 'SendMessage') os.cm.talk(subId, id);
+       } else if (msg.type === 'subagentToolDone') {
+         const id = msg.id as number;
+         const parentToolId = msg.parentToolId as string;
+         const toolId = msg.toolId as string;
++        const doneSubId = os.getSubagentId(id, parentToolId);
++        if (doneSubId !== null) os.cm.toolDone(doneSubId, toolId); // claude-monitor patch
+         setSubagentTools((prev) => {
+           const agentSubs = prev[id];
+           if (!agentSubs) return prev;
+diff --git a/webview-ui/src/office/components/OfficeCanvas.tsx b/webview-ui/src/office/components/OfficeCanvas.tsx
+index c0eaf32..6e20697 100644
+--- a/webview-ui/src/office/components/OfficeCanvas.tsx
++++ b/webview-ui/src/office/components/OfficeCanvas.tsx
+@@ -46,6 +46,10 @@ interface OfficeCanvasProps {
+   /** Currently-selected area label in the editor (alpha-bumped overlay). null otherwise. */
+   activeAreaLabel: string | null;
+ }
++/** claude-monitor patch: zoom when focusing an agent (at least, and how much
++ *  closer than before). */
++const FOCUS_ZOOM_MIN = 5;
++const FOCUS_ZOOM_STEP = 2;
+ 
+ export function OfficeCanvas({
+   officeState,
+@@ -717,6 +721,46 @@ export function OfficeCanvas({
+     [editorState, isEditMode, officeState, onDragMove, onEditorSelectionChange],
+   );
+ 
++  // claude-monitor patch: clicking an agent FOCUSES it — zoom in and follow it
++  // as it walks — and releasing (click again, Escape, empty space, or the
++  // claude-monitor panel closing) goes back to the zoom there was before.
++  const zoomBeforeFocusRef = useRef<number | null>(null);
++  const focusAgent = useCallback(
++    (id: number) => {
++      if (!officeState.characters.has(id)) return;
++      officeState.selectedAgentId = id;
++      officeState.cameraFollowId = id;
++      if (zoomBeforeFocusRef.current === null) zoomBeforeFocusRef.current = zoom;
++      const target = Math.min(ZOOM_MAX, Math.max(zoom, FOCUS_ZOOM_MIN, zoomBeforeFocusRef.current + FOCUS_ZOOM_STEP));
++      if (target !== zoom) onZoomChange(target);
++    },
++    [officeState, zoom, onZoomChange],
++  );
++  const releaseFocus = useCallback(() => {
++    officeState.selectedAgentId = null;
++    officeState.cameraFollowId = null;
++    if (zoomBeforeFocusRef.current !== null) {
++      onZoomChange(zoomBeforeFocusRef.current);
++      zoomBeforeFocusRef.current = null;
++    }
++  }, [officeState, onZoomChange]);
++  useEffect(() => {
++    const onFocus = (e: Event) => {
++      const id = (e as CustomEvent<{ id: number | null }>).detail?.id;
++      if (typeof id === 'number') focusAgent(id);
++      else releaseFocus();
++    };
++    const onKey = (e: KeyboardEvent) => {
++      if (e.key === 'Escape' && !isEditMode && officeState.cameraFollowId !== null) releaseFocus();
++    };
++    window.addEventListener('claude-monitor-focus', onFocus);
++    window.addEventListener('keydown', onKey);
++    return () => {
++      window.removeEventListener('claude-monitor-focus', onFocus);
++      window.removeEventListener('keydown', onKey);
++    };
++  }, [focusAgent, releaseFocus, isEditMode, officeState]);
++
+   const handleClick = useCallback(
+     (e: React.MouseEvent) => {
+       if (isEditMode) return; // handled by mouseDown/mouseUp
+@@ -728,12 +772,11 @@ export function OfficeCanvas({
+         // Dismiss any active bubble on click
+         officeState.dismissBubble(hitId);
+         // Toggle selection: click same agent deselects, different agent selects
++        // (claude-monitor patch: and focuses — zoom in and follow)
+         if (officeState.selectedAgentId === hitId) {
+-          officeState.selectedAgentId = null;
+-          officeState.cameraFollowId = null;
++          releaseFocus();
+         } else {
+-          officeState.selectedAgentId = hitId;
+-          officeState.cameraFollowId = hitId;
++          focusAgent(hitId);
+         }
+         onClick(hitId); // still focus terminal
+         return;
+@@ -783,12 +826,11 @@ export function OfficeCanvas({
+             }
+           }
+         }
+-        // Clicked empty space — deselect
+-        officeState.selectedAgentId = null;
+-        officeState.cameraFollowId = null;
++        // Clicked empty space — deselect (and release the focus)
++        releaseFocus();
+       }
+     },
+-    [officeState, onClick, screenToWorld, screenToTile, isEditMode],
++    [officeState, onClick, screenToWorld, screenToTile, isEditMode, focusAgent, releaseFocus],
+   );
+ 
+   const handleMouseLeave = useCallback(() => {
+diff --git a/webview-ui/src/office/components/ToolOverlay.tsx b/webview-ui/src/office/components/ToolOverlay.tsx
+index 1bb1e13..9538a62 100644
+--- a/webview-ui/src/office/components/ToolOverlay.tsx
++++ b/webview-ui/src/office/components/ToolOverlay.tsx
+@@ -175,14 +175,16 @@ export function ToolOverlay({
+             const rows = sub ? subagentTools[sub.parentAgentId]?.[sub.parentToolId] : undefined;
+             const activeRow =
+               isSelected && rows ? [...rows].reverse().find((t) => !t.done) : undefined;
+-            activityText = activeRow?.status ?? (sub?.label || 'Subtask');
++            const task =
++              sub && (sub.label || officeState.cm.subagentLabel(sub.parentAgentId, sub.parentToolId));
++            activityText = activeRow?.status ?? (task || 'Subtask');
+           }
+         } else {
+           activityText = getActivityText(
+             id,
+             agentTools,
+             ch.isActive,
+-            ch.bubbleType,
++            ch.bubbleType === 'talk' ? null : ch.bubbleType, // talk: claude-monitor patch
+             ch.waitingAwaitingInput ?? false,
+           );
+         }
+@@ -201,9 +203,24 @@ export function ToolOverlay({
+           dotColor = 'var(--color-status-active)';
+         }
+ 
+-        // Team info
+-        const teamRoleLabel = ch.isTeamLead ? 'LEAD' : ch.agentName || null;
+-        const hasExtraLines = !!(ch.folderName || teamRoleLabel);
++        // Team info. claude-monitor patch: without a team, say who is the lead
++        // of the session and whose sub-agent each sub-character is.
++        const parentName =
++          isSub && ch.parentAgentId !== null
++            ? officeState.characters.get(ch.parentAgentId)?.folderName
++            : undefined;
++        // Compact two-line label: who (★ lead name / ↳ sub-agent task) and what
++        // it is doing; a sub-agent also says whose it is. Real teams keep LEAD.
++        const subChar = isSub ? subagentCharacters.find((s) => s.id === id) : undefined;
++        const subTask =
++          subChar && (subChar.label || officeState.cm.subagentLabel(subChar.parentAgentId, subChar.parentToolId));
++        const title = isSub
++          ? `↳ ${subTask || 'Subagente'}`
++          : `${ch.isTeamLead ? 'LEAD · ' : '★ '}${ch.agentName || ch.folderName || 'Agente'}`;
++        const detail = isSub
++          ? `de ★ ${parentName ?? '?'}${activityText && activityText !== subTask ? ` · ${activityText}` : ''}`
++          : activityText;
++        const hasExtraLines = true;
+ 
+         // Context gauge. Every agent gets one — lead, teammate, adopted,
+         // headless — as soon as it has taken a turn. Sub-agents never do: they
+@@ -225,40 +242,33 @@ export function ToolOverlay({
+             data-testid="agent-overlay"
+             data-agent-id={id}
+           >
+-            <div className="flex items-center border-border px-8 pt-2 pb-4 gap-5 pixel-panel whitespace-nowrap max-w-2xs">
++            <div
++              className="flex items-center border-border pixel-panel whitespace-nowrap"
++              style={{ padding: '1px 5px 2px', gap: 4, maxWidth: 190 }}
++            >
+               {dotColor && (
+                 <span
+-                  className={`w-6 h-6 rounded-full shrink-0 ${isActive && !hasPermission && !hasWaiting ? 'pixel-pulse' : ''}`}
++                  className={`w-3 h-3 rounded-full shrink-0 ${isActive && !hasPermission && !hasWaiting ? 'pixel-pulse' : ''}`}
+                   style={{ background: dotColor }}
+                 />
+               )}
+               <div className="flex flex-col gap-0 overflow-hidden">
+-                {teamRoleLabel && (
+-                  <span
+-                    className="overflow-hidden text-ellipsis block leading-none"
+-                    style={{
+-                      fontSize: '18px',
+-                      color: ch.isTeamLead ? TEAM_LEAD_COLOR : TEAM_ROLE_COLOR,
+-                      fontWeight: ch.isTeamLead ? 'bold' : undefined,
+-                    }}
+-                  >
+-                    {teamRoleLabel}
+-                  </span>
+-                )}
+                 <span
+                   className="overflow-hidden text-ellipsis block leading-none"
+                   style={{
+-                    fontSize: isSub ? '20px' : '22px',
+-                    fontStyle: isSub ? 'italic' : undefined,
++                    fontSize: isSub ? '12px' : '13px',
++                    fontWeight: 'bold',
++                    color: isSub ? TEAM_ROLE_COLOR : TEAM_LEAD_COLOR,
+                   }}
+                 >
+-                  {activityText}
++                  {title}
++                </span>
++                <span
++                  className="overflow-hidden text-ellipsis block leading-none"
++                  style={{ fontSize: isSub ? '10px' : '11px', opacity: 0.85 }}
++                >
++                  {detail}
+                 </span>
+-                {ch.folderName && (
+-                  <span className="text-2xs leading-none overflow-hidden text-ellipsis block">
+-                    {ch.folderName}
+-                  </span>
+-                )}
+               </div>
+               {isSelected && !isSub && (
+                 <Button
+diff --git a/webview-ui/src/office/engine/characters.ts b/webview-ui/src/office/engine/characters.ts
+index 005253d..30c728e 100644
+--- a/webview-ui/src/office/engine/characters.ts
++++ b/webview-ui/src/office/engine/characters.ts
+@@ -98,6 +98,8 @@ export function updateCharacter(
+   blockedTiles: Set<string>,
+ ): void {
+   ch.frameTimer += dt;
++  // claude-monitor patch: a held character moves as if active (see cmHold).
++  const active = ch.isActive || ch.cmHold === true;
+ 
+   switch (ch.state) {
+     case CharacterState.TYPE: {
+@@ -106,7 +108,7 @@ export function updateCharacter(
+         ch.frame = (ch.frame + 1) % 2;
+       }
+       // If no longer active, stand up and start wandering (after seatTimer expires)
+-      if (!ch.isActive) {
++      if (!active) {
+         if (ch.seatTimer > 0) {
+           ch.seatTimer -= dt;
+           break;
+@@ -127,7 +129,7 @@ export function updateCharacter(
+       ch.frame = 0;
+       if (ch.seatTimer < 0) ch.seatTimer = 0; // clear turn-end sentinel
+       // If became active, pathfind to seat
+-      if (ch.isActive) {
++      if (active) {
+         if (!ch.seatId) {
+           // No seat assigned — type in place
+           ch.state = CharacterState.TYPE;
+@@ -223,7 +225,7 @@ export function updateCharacter(
+         ch.x = center.x;
+         ch.y = center.y;
+ 
+-        if (ch.isActive) {
++        if (active) {
+           if (!ch.seatId) {
+             // No seat — type in place
+             ch.state = CharacterState.TYPE;
+@@ -291,7 +293,7 @@ export function updateCharacter(
+       }
+ 
+       // If became active while wandering, repath to seat
+-      if (ch.isActive && ch.seatId) {
++      if (active && ch.seatId) {
+         const seat = seats.get(ch.seatId);
+         if (seat) {
+           const lastStep = ch.path[ch.path.length - 1];
+@@ -318,6 +320,10 @@ export function updateCharacter(
+ 
+ /** Get the correct sprite frame for a character's current state and direction */
+ export function getCharacterSprite(ch: Character, sprites: CharacterSprites): SpriteData {
++  // claude-monitor patch: at a shelf / next to someone they stand; on a sofa
++  // they sit still instead of typing.
++  if (ch.state === CharacterState.TYPE && ch.cmPose === 'stand') return sprites.walk[ch.dir][1];
++  if (ch.state === CharacterState.TYPE && ch.cmPose === 'sit') return sprites.typing[ch.dir][0];
+   switch (ch.state) {
+     case CharacterState.TYPE:
+       if (isReadingTool(ch.currentTool)) {
+diff --git a/webview-ui/src/office/engine/claudeMonitor.ts b/webview-ui/src/office/engine/claudeMonitor.ts
+new file mode 100644
+index 0000000..acda663
+--- /dev/null
++++ b/webview-ui/src/office/engine/claudeMonitor.ts
+@@ -0,0 +1,692 @@
++// Local patch (claude-monitor): how agents behave in the office beyond the
++// stock "sit and type / wander" loop.
++//
++// - Thinking (active, no tool running for a few seconds, right after working):
++//   walk to a bookshelf and stand there reading.
++// - Resting (turn over, or nothing happening for a while): sit on the sofa.
++// - Waiting on a sub-agent (a foreground Agent/Task call is pending): sit on a
++//   free sofa or bench until the result comes back.
++// - Talking: when two agents of the same session message each other (or a
++//   sub-agent reports in), both go sit together at the meeting table (wooden
++//   chairs) and talk; with no meeting room, the speaker walks up to the other.
++// - Arriving / leaving: new sessions and sub-agents walk in through the door
++//   (sub-agents first go greet their lead); closed ones walk out through it.
++// - Per-account filter: the embedding claude-monitor window says which agents
++//   to show.
++// - Real state: claude-monitor also says what each agent is actually doing
++//   (read from the transcripts and the live-session registry). Transcript-only
++//   sessions often miss tool-done / turn-end events here, so that state wins
++//   over the one guessed from events: "te espera" rests, "trabajando" stays at
++//   the desk, "pensando" goes to think.
++// - Teams: a sub-agent takes the free desk closest to its lead, so each
++//   session's team works together inside the one shared office.
++// - Roles: leads (main agents) sit in the "Despacho" area, sub-agents work in
++//   "Trabajo" (layout areas of the "edificio"; other layouts are left alone).
++// - Meetings: a sub-agent that is launched first meets its lead in the meeting
++//   room (briefing), and before it leaves it meets it again (hand-off report).
++//
++// Every errand works by temporarily swapping the character's seat for the
++// errand's spot (a sofa seat, or a virtual seat in front of a shelf / next to
++// the other agent / at the door) and letting the stock FSM walk it there. When
++// the errand ends the real seat comes back and the FSM walks it home.
++
++import { getCatalogEntry } from '../layout/furnitureCatalog.js';
++import { findPath, isWalkable } from '../layout/tileMap.js';
++import type { Character, Seat } from '../types.js';
++import { Direction } from '../types.js';
++import { startMatrixEffect } from './matrixEffectState.js';
++import type { OfficeState } from './officeState.js';
++
++/** Seconds with no tool running before an active agent goes to think. Short
++ *  gaps between two tools are normal and should not send it walking. */
++const THINK_AFTER_SEC = 4;
++/** Past this with nothing running it is not thinking any more, just idle —
++ *  transcript-only sessions can stay "active" long after the turn ended. */
++const IDLE_AFTER_SEC = 45;
++/** How long a conversation lasts once they are together. */
++const TALK_SEC = 6;
++/** Longest walk to the meeting room before the talk starts anyway. */
++const TALK_WALK_MAX_SEC = 20;
++/** How long the hello bubble shows when a session walks in. */
++const GREET_SEC = 3;
++/** Give up walking out after this long and just fade out. */
++const LEAVE_TIMEOUT_SEC = 25;
++/** How far (in tiles) a sub-agent's desk may be from its lead's. Further
++ *  than this it works standing next to the lead instead. */
++const TEAM_SEAT_MAX_DIST = 8;
++/** Right after the webview loads, the agents it restores were already there:
++ *  they appear in place instead of walking in. */
++const WARMUP_SEC = 5;
++
++const SUBAGENT_TOOLS = new Set(['Agent', 'Task']);
++/** Resting / waiting seats. Not benches: desks use CUSHIONED_BENCH as seats. */
++const LOUNGE = /SOFA/i;
++/** Meeting-room chairs: the wooden ones around the meeting tables. */
++const MEETING = /WOODEN_CHAIR|KN_CHAIR/i;
++/** Layout area (see the "edificio" layout) where leads direct their team. */
++const DESPACHO = 'Despacho';
++const TRABAJO = 'Trabajo';
++const BIBLIOTECA = 'Biblioteca';
++/** claude-monitor reports every ~1.5 s; older than this, its word no longer counts. */
++const EXTERNAL_FRESH_SEC = 8;
++/** How often an agent checks it sits in its role's area. */
++const ROLE_CHECK_SEC = 2;
++const SHELF = /BOOKSHELF/i;
++const VIRTUAL = 'cm:';
++
++type Errand = 'think' | 'wait' | 'rest' | 'talk' | 'leave';
++
++interface Crew {
++  errand: Errand | null;
++  /** The real seat while on an errand. */
++  home: string | null;
++  errandSeat: string | null;
++  idleSec: number;
++  pending: Map<string, { name: string; background: boolean }>;
++  talkUntil: number;
++  talkWith: number | null;
++  greetUntil: number;
++  leftAt: number;
++  /** When both talkers reached their spots (null while still walking). */
++  talkSince: number | null;
++  /** Last time its role seat (Despacho / Trabajo) was checked. */
++  roleCheckAt: number;
++  /** A sub-agent that is done: it reports to its lead first, then leaves. */
++  leaveAfterTalk: boolean;
++  reported: boolean;
++}
++
++/** Door tile of the current layout, for the renderer's doormat. */
++export let claudeMonitorDoor: { col: number; row: number } | null = null;
++
++export class ClaudeMonitorCrew {
++  private crew = new Map<number, Crew>();
++  private clock = 0;
++  private visible: Set<number> | null = null;
++  /** "leadId:toolUseId" -> the sub-agent's task, as claude-monitor reads it
++   *  from its sidecar. Sub-agents adopted mid-run have no Subtask label. */
++  private subLabels = new Map<string, string>();
++  /** What claude-monitor says each agent is doing, and when it said it. */
++  private external = new Map<number, { estado: string; at: number }>();
++  private doorFor: unknown = null;
++
++  private readonly os: OfficeState;
++
++  constructor(os: OfficeState) {
++    this.os = os;
++  }
++
++  private get(id: number): Crew {
++    let c = this.crew.get(id);
++    if (!c) {
++      c = {
++        errand: null,
++        home: null,
++        errandSeat: null,
++        idleSec: 0,
++        pending: new Map(),
++        talkUntil: 0,
++        talkWith: null,
++        greetUntil: 0,
++        leftAt: 0,
++        talkSince: null,
++        roleCheckAt: -Infinity,
++        leaveAfterTalk: false,
++        reported: false,
++      };
++      this.crew.set(id, c);
++    }
++    return c;
++  }
++
++  // ── Inputs ──────────────────────────────────────────────────────────────
++
++  toolStart(id: number, toolId: string, name: string | null, background: boolean): void {
++    this.get(id).pending.set(toolId, { name: name ?? '', background });
++  }
++
++  toolDone(id: number, toolId: string): void {
++    this.crew.get(id)?.pending.delete(toolId);
++  }
++
++  toolsClear(id: number): void {
++    this.crew.get(id)?.pending.clear();
++  }
++
++  /** `from` and `to` meet and talk for a while: both at the meeting table
++   *  when there is one, otherwise `from` walks up to `to`. The talk time
++   *  counts from when they are together (capped, so a blocked path ends it). */
++  talk(from: number, to: number): void {
++    if (from === to || !this.os.characters.has(from) || !this.os.characters.has(to)) return;
++    const target = this.os.characters.get(to)!;
++    if (this.isLeaving(target)) return;
++    const until = this.clock + TALK_SEC + TALK_WALK_MAX_SEC;
++    const a = this.get(from);
++    a.talkUntil = until;
++    a.talkWith = to;
++    if (this.hasMeetingRoom()) {
++      const b = this.get(to);
++      b.talkUntil = until;
++      b.talkWith = from;
++    }
++  }
++
++  private hasMeetingRoom(): boolean {
++    for (const uid of this.os.seats.keys()) if (MEETING.test(this.seatType(uid))) return true;
++    return false;
++  }
++
++  /** State as claude-monitor reads it: escribiendo, leyendo, delegando,
++   *  pensando, permiso, esperando, terminado. Stale after a few seconds. */
++  setExternalState(id: number, estado: string): void {
++    this.external.set(id, { estado, at: this.clock });
++  }
++
++  private externalState(id: number): string | null {
++    const e = this.external.get(id);
++    return e && this.clock - e.at < EXTERNAL_FRESH_SEC ? e.estado : null;
++  }
++
++  setSubagentLabel(leadId: number, toolUseId: string, label: string): void {
++    this.subLabels.set(`${leadId}:${toolUseId}`, label);
++  }
++
++  subagentLabel(leadId: number, toolUseId: string): string | undefined {
++    return this.subLabels.get(`${leadId}:${toolUseId}`);
++  }
++
++  /** Main agent ids to show (their sub-agents follow them); `null` shows all. */
++  setVisible(ids: number[] | null): void {
++    this.visible = ids ? new Set(ids) : null;
++  }
++
++  isVisible(ch: Character): boolean {
++    if (!this.visible) return true;
++    const main = ch.isSubagent && ch.parentAgentId !== null ? ch.parentAgentId : ch.id;
++    return this.visible.has(main);
++  }
++
++  /** The seat to persist (and to cluster the team around): the real one,
++   *  not an errand's. */
++  homeSeatOf(ch: Character): string | null {
++    const c = this.crew.get(ch.id);
++    return c?.errand ? c.home : ch.seatId;
++  }
++
++  /** The seat it returns to between errands. */
++  private realSeat(ch: Character, c: Crew): string | null {
++    return c.errand ? c.home : ch.seatId;
++  }
++
++  private setRealSeat(ch: Character, c: Crew, uid: string | null): void {
++    if (c.errand) c.home = uid;
++    else {
++      ch.seatId = uid;
++      if (uid) this.os.sendToSeat(ch.id);
++    }
++  }
++
++  private hasArea(label: string): boolean {
++    return this.os.layout.areas?.some((a) => a.label === label) ?? false;
++  }
++
++  private areaAt(col: number, row: number): string | null {
++    return this.os.layout.areaTiles?.[row * this.os.layout.cols + col] ?? null;
++  }
++
++  private seatArea(uid: string | null): string | null {
++    const seat = uid ? this.os.seats.get(uid) : undefined;
++    return seat ? this.areaAt(seat.seatCol, seat.seatRow) : null;
++  }
++
++  /** Leads belong in the Despacho, sub-agents in Trabajo: move to a free desk
++   *  there when the current one is elsewhere. Layouts without those areas are
++   *  left as they are. */
++  private placeByRole(ch: Character, c: Crew): void {
++    if (this.clock - c.roleCheckAt < ROLE_CHECK_SEC) return;
++    c.roleCheckAt = this.clock;
++    const area = ch.isSubagent ? TRABAJO : DESPACHO;
++    const current = this.realSeat(ch, c);
++    if (this.seatArea(current) === area) return;
++    const lead = ch.isSubagent && ch.parentAgentId !== null ? this.os.characters.get(ch.parentAgentId) : undefined;
++    const desk = this.freeSeatIn(area, lead ?? ch);
++    if (!desk) return;
++    const old = current ? this.os.seats.get(current) : undefined;
++    if (old && !current!.startsWith(VIRTUAL)) old.assigned = false;
++    desk.assigned = true;
++    this.setRealSeat(ch, c, desk.uid);
++  }
++
++  private freeSeatIn(area: string, ch: Character): Seat | null {
++    let best: Seat | null = null;
++    let bestD = Infinity;
++    for (const [uid, seat] of this.os.seats) {
++      if (seat.assigned || uid.startsWith(VIRTUAL) || this.areaAt(seat.seatCol, seat.seatRow) !== area) continue;
++      const type = this.seatType(uid);
++      if (LOUNGE.test(type) || MEETING.test(type)) continue;
++      const d = dist(ch, seat.seatCol, seat.seatRow);
++      if (d < bestD) {
++        best = seat;
++        bestD = d;
++      }
++    }
++    return best;
++  }
++
++  isLeaving(ch: Character): boolean {
++    return this.crew.get(ch.id)?.errand === 'leave';
++  }
++
++  // ── Teams ───────────────────────────────────────────────────────────────
++
++  /** Give a new sub-agent the free desk closest to its lead (not a sofa, not
++   *  an errand spot). No desk close enough: it keeps working next to the lead. */
++  seatSubagent(ch: Character): void {
++    if (!ch.isSubagent || ch.parentAgentId === null || ch.seatId) return;
++    const lead = this.os.characters.get(ch.parentAgentId);
++    if (!lead) return;
++    const leadSeat = (this.homeSeatOf(lead) && this.os.seats.get(this.homeSeatOf(lead)!)) || null;
++    const col = leadSeat ? leadSeat.seatCol : lead.tileCol;
++    const row = leadSeat ? leadSeat.seatRow : lead.tileRow;
++    // In the edificio sub-agents work in Trabajo, closest to their lead;
++    // elsewhere, the closest free desk within reach.
++    let best: Seat | null = this.freeSeatIn(TRABAJO, lead);
++    let bestD = Infinity;
++    for (const [uid, seat] of best ? [] : this.os.seats) {
++      if (seat.assigned || uid.startsWith(VIRTUAL)) continue;
++      const type = this.seatType(uid);
++      if (LOUNGE.test(type) || MEETING.test(type)) continue;
++      const d = Math.abs(seat.seatCol - col) + Math.abs(seat.seatRow - row);
++      if (d < bestD && d <= TEAM_SEAT_MAX_DIST) {
++        best = seat;
++        bestD = d;
++      }
++    }
++    if (!best) return;
++    best.assigned = true;
++    ch.seatId = best.uid;
++    const c = this.crew.get(ch.id);
++    if (c?.errand) c.home = best.uid; // arriving: goes to greet first, then sits here
++    else this.os.sendToSeat(ch.id);
++  }
++
++  // ── Arrive / leave ──────────────────────────────────────────────────────
++
++  /** A session that just opened walks in from the door to its desk. */
++  arrive(id: number): void {
++    const ch = this.os.characters.get(id);
++    const door = this.door();
++    if (!ch || !door || this.clock < WARMUP_SEC) return;
++    this.placeAt(ch, door);
++    this.get(id).greetUntil = this.clock + GREET_SEC;
++    this.os.sendToSeat(id);
++  }
++
++  /** A sub-agent that was just launched walks in and first goes to its lead. */
++  arriveSubagent(id: number): void {
++    const ch = this.os.characters.get(id);
++    const door = this.door();
++    if (!ch || !door || this.clock < WARMUP_SEC || ch.parentAgentId === null) return;
++    this.placeAt(ch, door);
++    this.talk(id, ch.parentAgentId);
++  }
++
++  /** Walk out through the door, then fade. Returns false when there is no
++   *  door to walk to (the caller then despawns in place as before). */
++  leave(ch: Character): boolean {
++    const door = this.door();
++    if (!door) return false;
++    const c = this.get(ch.id);
++    const lead = ch.isSubagent && ch.parentAgentId !== null ? this.os.characters.get(ch.parentAgentId) : undefined;
++    if (lead && !c.reported && !this.isLeaving(lead) && this.hasMeetingRoom()) {
++      // Hand-off: meet the lead in Reuniones first, then leave (see tick).
++      c.reported = true;
++      c.leaveAfterTalk = true;
++      ch.cmHold = true;
++      this.talk(ch.id, lead.id);
++      return true;
++    }
++    this.endErrand(ch, c);
++    const seat = this.virtualSeat(`door:${ch.id}`, door.col, door.row, Direction.DOWN);
++    c.home = null;
++    c.errand = 'leave';
++    c.errandSeat = seat.uid;
++    c.leftAt = this.clock;
++    ch.seatId = seat.uid;
++    ch.cmHold = true;
++    ch.bubbleType = null;
++    ch.cmPose = undefined;
++    this.os.sendToSeat(ch.id);
++    return true;
++  }
++
++  forget(id: number): void {
++    const c = this.crew.get(id);
++    if (c?.errandSeat?.startsWith(VIRTUAL)) this.os.seats.delete(c.errandSeat);
++    this.crew.delete(id);
++  }
++
++  // ── Per frame ───────────────────────────────────────────────────────────
++
++  tick(dt: number): void {
++    this.clock += dt;
++    claudeMonitorDoor = this.door();
++    for (const ch of this.os.characters.values()) {
++      if (ch.matrixEffect) continue;
++      const c = this.get(ch.id);
++
++      // A layout edit rebuilds every seat and reassigns agents: whatever errand
++      // was running is gone, and the seat the agent has now is its real one.
++      if (c.errand && c.errandSeat && !this.os.seats.has(c.errandSeat)) {
++        c.errand = null;
++        c.errandSeat = null;
++        c.home = null;
++        ch.cmPose = undefined;
++        ch.cmHold = false;
++      }
++
++      if (c.errand === 'leave') {
++        const arrived = ch.path.length === 0 && this.atSeat(ch);
++        if (arrived || this.clock - c.leftAt > LEAVE_TIMEOUT_SEC) {
++          if (c.errandSeat) this.os.seats.delete(c.errandSeat);
++          c.errandSeat = null;
++          startMatrixEffect(ch, 'despawn');
++        }
++        continue;
++      }
++
++      if (!c.leaveAfterTalk) this.placeByRole(ch, c);
++
++      // A finished sub-agent reports to its lead, then walks out.
++      if (c.leaveAfterTalk && c.errand !== 'talk' && !(c.talkUntil > this.clock)) {
++        c.leaveAfterTalk = false;
++        this.leave(ch);
++        continue;
++      }
++
++      const running = [...c.pending.values()];
++      const waitingOnSub = running.some((t) => SUBAGENT_TOOLS.has(t.name) && !t.background);
++      // A lead waiting on its sub-agent is not idle: it is directing.
++      c.idleSec = ch.isActive && running.length === 0 ? c.idleSec + dt : 0;
++      if (waitingOnSub && !ch.isSubagent) c.idleSec = 0;
++      const talking = c.talkUntil > this.clock && c.talkWith !== null && this.os.characters.has(c.talkWith);
++
++      const ext = this.externalState(ch.id);
++      const guessed: Errand | null =
++        ch.isActive && waitingOnSub && ch.isSubagent
++          ? 'wait'
++          : !ch.isActive || c.idleSec > IDLE_AFTER_SEC
++            ? 'rest'
++            : c.idleSec > THINK_AFTER_SEC
++              ? 'think'
++              : null;
++      // claude-monitor's word wins when it has one (see the header).
++      const fromMonitor: Errand | null | undefined =
++        ext === 'esperando' || ext === 'terminado'
++          ? 'rest'
++          : ext === 'pensando'
++            ? c.idleSec > THINK_AFTER_SEC || !ch.isActive
++              ? 'think'
++              : null
++            : ext === 'escribiendo' || ext === 'leyendo' || ext === 'permiso'
++              ? null
++              : ext === 'delegando'
++                ? ch.isSubagent
++                  ? 'wait'
++                  : null
++                : undefined;
++      const want: Errand | null = talking ? 'talk' : fromMonitor !== undefined ? fromMonitor : guessed;
++      if (want !== c.errand) {
++        this.endErrand(ch, c);
++        if (want) this.startErrand(ch, c, want);
++      }
++
++      // Talking: once both are there, face each other and give the talk its
++      // full time from that moment.
++      if (c.errand === 'talk' && c.talkWith !== null && ch.path.length === 0) {
++        const other = this.os.characters.get(c.talkWith);
++        if (other && other.path.length === 0) {
++          if (!ch.cmPose || ch.cmPose === 'stand') ch.dir = facing(ch, other);
++          if (!other.cmPose) other.dir = facing(other, ch);
++          if (c.talkSince === null) {
++            c.talkSince = this.clock;
++            c.talkUntil = Math.min(c.talkUntil, this.clock + TALK_SEC);
++            const oc = this.crew.get(c.talkWith);
++            if (oc && oc.talkWith === ch.id) oc.talkUntil = c.talkUntil;
++          }
++        }
++      }
++    }
++    this.updateBubbles();
++  }
++
++  private updateBubbles(): void {
++    const talkingIds = new Set<number>();
++    for (const [id, c] of this.crew) {
++      if (c.errand === 'talk' && c.talkWith !== null && c.talkSince !== null) {
++        talkingIds.add(id);
++        talkingIds.add(c.talkWith);
++      }
++      if (c.greetUntil > this.clock) talkingIds.add(id);
++    }
++    for (const ch of this.os.characters.values()) {
++      if (talkingIds.has(ch.id)) {
++        if (!ch.bubbleType) ch.bubbleType = 'talk';
++      } else if (ch.bubbleType === 'talk') {
++        ch.bubbleType = null;
++      }
++    }
++  }
++
++  // ── Errands ─────────────────────────────────────────────────────────────
++
++  private startErrand(ch: Character, c: Crew, kind: Errand): void {
++    const seat =
++      kind === 'wait' || kind === 'rest'
++        ? this.freeLoungeSeat(ch)
++        : kind === 'think'
++          ? this.shelfSpot(ch)
++          : c.talkWith !== null
++            ? this.talkSpot(ch, c.talkWith)
++            : null;
++    c.errand = kind;
++    if (!seat) return; // nowhere to go: stays put, retries when the errand changes
++    c.home = ch.seatId;
++    c.errandSeat = seat.uid;
++    seat.assigned = true;
++    ch.seatId = seat.uid;
++    ch.cmPose = kind === 'wait' || kind === 'rest' || MEETING.test(this.seatType(seat.uid)) ? 'sit' : 'stand';
++    ch.cmHold = true;
++    this.os.sendToSeat(ch.id);
++  }
++
++  private endErrand(ch: Character, c: Crew): void {
++    if (!c.errand) return;
++    if (c.errandSeat) {
++      const seat = this.os.seats.get(c.errandSeat);
++      if (c.errandSeat.startsWith(VIRTUAL)) this.os.seats.delete(c.errandSeat);
++      else if (seat) seat.assigned = false;
++      ch.seatId = c.home;
++      if (ch.seatId) this.os.sendToSeat(ch.id);
++    }
++    c.errand = null;
++    c.errandSeat = null;
++    c.home = null;
++    ch.cmPose = undefined;
++    ch.cmHold = false;
++  }
++
++  // ── Spots ───────────────────────────────────────────────────────────────
++
++  /** The furniture type a seat belongs to. Multi-tile chairs (2-seat sofas)
++   *  name their extra seats `<uid>:1`, `<uid>:2`… */
++  private seatType(uid: string): string {
++    const base = uid.split(':')[0];
++    return this.os.layout.furniture.find((f) => f.uid === base)?.type ?? '';
++  }
++
++  /** A free meeting chair: next to `near` (the partner's chair) when given. */
++  private meetingSeat(ch: Character, near: Seat | null): Seat | null {
++    let best: Seat | null = null;
++    let bestD = Infinity;
++    for (const [uid, seat] of this.os.seats) {
++      if (seat.assigned || uid.startsWith(VIRTUAL) || !MEETING.test(this.seatType(uid))) continue;
++      const d = near
++        ? Math.abs(seat.seatCol - near.seatCol) + Math.abs(seat.seatRow - near.seatRow)
++        : dist(ch, seat.seatCol, seat.seatRow);
++      if (d < bestD && this.reachable(ch, seat.seatCol, seat.seatRow, true)) {
++        best = seat;
++        bestD = d;
++      }
++    }
++    return best;
++  }
++
++  private freeLoungeSeat(ch: Character): Seat | null {
++    let best: Seat | null = null;
++    let bestD = Infinity;
++    for (const [uid, seat] of this.os.seats) {
++      if (seat.assigned || uid.startsWith(VIRTUAL)) continue;
++      if (!LOUNGE.test(this.seatType(uid))) continue;
++      const d = dist(ch, seat.seatCol, seat.seatRow);
++      if (d < bestD && this.reachable(ch, seat.seatCol, seat.seatRow, true)) {
++        best = seat;
++        bestD = d;
++      }
++    }
++    return best;
++  }
++
++  private shelfSpot(ch: Character): Seat | null {
++    let best: { col: number; row: number } | null = null;
++    let bestD = Infinity;
++    for (const item of this.os.layout.furniture) {
++      if (!SHELF.test(item.type)) continue;
++      const entry = getCatalogEntry(item.type);
++      const w = entry?.footprintW ?? 1;
++      const h = entry?.footprintH ?? 1;
++      // Stand on the floor right below the shelf, looking up at it.
++      for (let dc = 0; dc < w; dc++) {
++        for (const dr of [0, 1]) {
++          const col = item.col + dc;
++          const row = item.row + h + dr;
++          if (!this.free(ch, col, row)) continue;
++          // Shelves in the Biblioteca win over any other (the Despacho has one
++          // on its wall too): that is where one goes to think.
++          const d = dist(ch, col, row) + (this.hasArea(BIBLIOTECA) && this.areaAt(col, row) !== BIBLIOTECA ? 1000 : 0);
++          if (d < bestD && this.reachable(ch, col, row)) {
++            best = { col, row };
++            bestD = d;
++          }
++          break;
++        }
++      }
++    }
++    return best ? this.virtualSeat(`think:${ch.id}`, best.col, best.row, Direction.UP) : null;
++  }
++
++  /** Meeting room when there is one (next to the partner if it already has a
++   *  chair there), else right beside the other agent. */
++  private talkSpot(ch: Character, otherId: number): Seat | null {
++    const partner = this.crew.get(otherId);
++    const partnerSeat =
++      partner?.errand === 'talk' && partner.errandSeat ? (this.os.seats.get(partner.errandSeat) ?? null) : null;
++    const meeting = this.meetingSeat(ch, partnerSeat);
++    if (meeting) {
++      const c = this.get(ch.id);
++      c.talkSince = null;
++      return meeting;
++    }
++    return this.besideSpot(ch, otherId);
++  }
++
++  private besideSpot(ch: Character, otherId: number): Seat | null {
++    const other = this.os.characters.get(otherId);
++    if (!other) return null;
++    const around = [
++      [1, 0],
++      [-1, 0],
++      [0, 1],
++      [0, -1],
++      [1, 1],
++      [-1, 1],
++      [1, -1],
++      [-1, -1],
++    ];
++    for (const [dc, dr] of around) {
++      const col = other.tileCol + dc;
++      const row = other.tileRow + dr;
++      if (this.free(ch, col, row) && this.reachable(ch, col, row)) {
++        const dir = dc > 0 ? Direction.LEFT : dc < 0 ? Direction.RIGHT : dr > 0 ? Direction.UP : Direction.DOWN;
++        return this.virtualSeat(`talk:${ch.id}`, col, row, dir);
++      }
++    }
++    return null;
++  }
++
++  /** Walkable, and nobody standing there or headed there. */
++  private free(ch: Character, col: number, row: number): boolean {
++    if (!isWalkable(col, row, this.os.tileMap, this.os.blockedTiles)) return false;
++    for (const other of this.os.characters.values()) {
++      if (other.id !== ch.id && other.tileCol === col && other.tileRow === row) return false;
++    }
++    for (const [uid, seat] of this.os.seats) {
++      if (uid.startsWith(VIRTUAL) && seat.seatCol === col && seat.seatRow === row) return false;
++    }
++    return true;
++  }
++
++  private reachable(ch: Character, col: number, row: number, seatTile = false): boolean {
++    if (ch.tileCol === col && ch.tileRow === row) return true;
++    const blocked = seatTile ? new Set(this.os.blockedTiles) : this.os.blockedTiles;
++    if (seatTile) blocked.delete(`${col},${row}`);
++    return findPath(ch.tileCol, ch.tileRow, col, row, this.os.tileMap, blocked).length > 0;
++  }
++
++  private virtualSeat(name: string, col: number, row: number, facingDir: Direction): Seat {
++    const uid = `${VIRTUAL}${name}`;
++    const seat: Seat = { uid, seatCol: col, seatRow: row, facingDir, assigned: true };
++    this.os.seats.set(uid, seat);
++    return seat;
++  }
++
++  private atSeat(ch: Character): boolean {
++    const seat = ch.seatId ? this.os.seats.get(ch.seatId) : undefined;
++    return !!seat && ch.tileCol === seat.seatCol && ch.tileRow === seat.seatRow;
++  }
++
++  private placeAt(ch: Character, tile: { col: number; row: number }): void {
++    ch.matrixEffect = null;
++    ch.tileCol = tile.col;
++    ch.tileRow = tile.row;
++    ch.x = tile.col * 16 + 8;
++    ch.y = tile.row * 16 + 8;
++    ch.path = [];
++    ch.dir = Direction.UP;
++  }
++
++  /** The door: the lowest walkable tile of the office, as centered as possible.
++   *  Recomputed only when the layout changes. */
++  private door(): { col: number; row: number } | null {
++    const tiles = this.os.walkableTiles;
++    if (this.doorFor === tiles) return claudeMonitorDoor;
++    this.doorFor = tiles;
++    if (tiles.length === 0) return (claudeMonitorDoor = null);
++    const maxRow = Math.max(...tiles.map((t) => t.row));
++    const bottom = tiles.filter((t) => t.row === maxRow);
++    const mid = tiles.reduce((s, t) => s + t.col, 0) / tiles.length;
++    bottom.sort((a, b) => Math.abs(a.col - mid) - Math.abs(b.col - mid));
++    return (claudeMonitorDoor = bottom[0]);
++  }
++}
++
++function dist(ch: Character, col: number, row: number): number {
++  return Math.abs(ch.tileCol - col) + Math.abs(ch.tileRow - row);
++}
++
++function facing(from: Character, to: Character): Direction {
++  const dc = to.tileCol - from.tileCol;
++  const dr = to.tileRow - from.tileRow;
++  if (Math.abs(dc) >= Math.abs(dr)) return dc > 0 ? Direction.RIGHT : Direction.LEFT;
++  return dr > 0 ? Direction.DOWN : Direction.UP;
++}
+diff --git a/webview-ui/src/office/engine/officeState.ts b/webview-ui/src/office/engine/officeState.ts
+index b2c22f6..b99af79 100644
+--- a/webview-ui/src/office/engine/officeState.ts
++++ b/webview-ui/src/office/engine/officeState.ts
+@@ -39,6 +39,7 @@ import type {
+ } from '../types.js';
+ import { CharacterState, Direction, PetState, TILE_SIZE } from '../types.js';
+ import { createCharacter, updateCharacter } from './characters.js';
++import { ClaudeMonitorCrew } from './claudeMonitor.js';
+ import { advanceMatrixEffect, startMatrixEffect } from './matrixEffectState.js';
+ import { createPet, updatePet } from './petEntity.js';
+ import { anchorTile, closestFreeSeat } from './seatPlacement.js';
+@@ -71,6 +72,8 @@ export class OfficeState {
+   /** Reverse lookup: sub-agent character ID → parent info */
+   subagentMeta: Map<number, { parentAgentId: number; parentToolId: string }> = new Map();
+   private nextSubagentId = -1;
++  /** Local patch (claude-monitor): errands, doors, talks, per-account filter. */
++  readonly cm = new ClaudeMonitorCrew(this);
+ 
+   /**
+    * folderName → list of Area labels that workspace folder belongs to.
+@@ -553,7 +556,7 @@ export class OfficeState {
+   removeAgent(id: number): void {
+     const ch = this.characters.get(id);
+     if (!ch) return;
+-    if (ch.matrixEffect === 'despawn') return; // already despawning
++    if (ch.matrixEffect === 'despawn' || this.cm.isLeaving(ch)) return; // already going
+     // Free seat and clear selection immediately
+     if (ch.seatId) {
+       const seat = this.seats.get(ch.seatId);
+@@ -561,9 +564,9 @@ export class OfficeState {
+     }
+     if (this.selectedAgentId === id) this.selectedAgentId = null;
+     if (this.cameraFollowId === id) this.cameraFollowId = null;
+-    // Start despawn animation instead of immediate delete
+-    startMatrixEffect(ch, 'despawn');
++    // Walk out through the door (claude-monitor patch); despawn in place if none
+     ch.bubbleType = null;
++    if (!this.cm.leave(ch)) startMatrixEffect(ch, 'despawn');
+   }
+ 
+   /** Find seat uid at a given tile position, or null */
+@@ -718,6 +721,7 @@ export class OfficeState {
+ 
+     this.subagentIdMap.set(key, id);
+     this.subagentMeta.set(id, { parentAgentId, parentToolId });
++    this.cm.seatSubagent(ch); // claude-monitor patch: sits with its team
+     return id;
+   }
+ 
+@@ -739,9 +743,9 @@ export class OfficeState {
+         const seat = this.seats.get(ch.seatId);
+         if (seat) seat.assigned = false;
+       }
+-      // Start despawn animation — keep character in map for rendering
+-      startMatrixEffect(ch, 'despawn');
++      // Walk out through the door (claude-monitor patch) — keep character in map
+       ch.bubbleType = null;
++      if (!this.cm.leave(ch)) startMatrixEffect(ch, 'despawn');
+     }
+     // Clean up tracking maps immediately so keys don't collide
+     this.subagentIdMap.delete(key);
+@@ -768,9 +772,9 @@ export class OfficeState {
+             const seat = this.seats.get(ch.seatId);
+             if (seat) seat.assigned = false;
+           }
+-          // Start despawn animation
+-          startMatrixEffect(ch, 'despawn');
++          // Walk out through the door (claude-monitor patch)
+           ch.bubbleType = null;
++          if (!this.cm.leave(ch)) startMatrixEffect(ch, 'despawn');
+         }
+         this.subagentMeta.delete(id);
+         if (this.selectedAgentId === id) this.selectedAgentId = null;
+@@ -1101,6 +1105,7 @@ export class OfficeState {
+       this.greeter = null;
+     }
+ 
++    this.cm.tick(dt);
+     const toDelete: number[] = [];
+     for (const ch of this.characters.values()) {
+       const effect = advanceMatrixEffect(ch, dt);
+@@ -1126,6 +1131,7 @@ export class OfficeState {
+     // Remove characters that finished despawn
+     for (const id of toDelete) {
+       this.characters.delete(id);
++      this.cm.forget(id);
+     }
+ 
+     // ── Pet FSM ────────────────────────────────────────────────
+@@ -1154,7 +1160,7 @@ export class OfficeState {
+     const seats: Record<number, { palette: number; hueShift: number; seatId: string | null }> = {};
+     for (const ch of this.characters.values()) {
+       if (ch.isSubagent) continue;
+-      seats[ch.id] = { palette: ch.palette, hueShift: ch.hueShift, seatId: ch.seatId };
++      seats[ch.id] = { palette: ch.palette, hueShift: ch.hueShift, seatId: this.cm.homeSeatOf(ch) };
+     }
+     return seats;
+   }
+@@ -1163,7 +1169,7 @@ export class OfficeState {
+    *  is up, the consent greeter. This is the ONE place the greeter joins the
+    *  agents — every other consumer reads `characters` and gets agents only. */
+   getCharacters(): Character[] {
+-    const chars = Array.from(this.characters.values());
++    const chars = Array.from(this.characters.values()).filter((ch) => this.cm.isVisible(ch));
+     if (this.greeter) chars.push(this.greeter);
+     return chars;
+   }
+@@ -1174,8 +1180,8 @@ export class OfficeState {
+   getCharacterAt(worldX: number, worldY: number): number | null {
+     const chars = Array.from(this.characters.values()).sort((a, b) => b.y - a.y);
+     for (const ch of chars) {
+-      // Skip characters that are despawning
+-      if (ch.matrixEffect === 'despawn') continue;
++      // Skip characters that are despawning, leaving, or filtered out
++      if (ch.matrixEffect === 'despawn' || this.cm.isLeaving(ch) || !this.cm.isVisible(ch)) continue;
+       // Character sprite is 16x24, anchored bottom-center
+       // Apply sitting offset to match visual position
+       const sittingOffset = ch.state === CharacterState.TYPE ? CHARACTER_SITTING_OFFSET_PX : 0;
+diff --git a/webview-ui/src/office/engine/renderer.ts b/webview-ui/src/office/engine/renderer.ts
+index 89528f8..c841170 100644
+--- a/webview-ui/src/office/engine/renderer.ts
++++ b/webview-ui/src/office/engine/renderer.ts
+@@ -72,6 +72,12 @@ import type {
+ import { CharacterState, TILE_SIZE, TileType } from '../types.js';
+ import { getWallInstances, hasWallSprites, wallColorToHex } from '../wallTiles.js';
+ import { getCharacterSprite } from './characters.js';
++import { claudeMonitorDoor } from './claudeMonitor.js';
++
++/** claude-monitor patch: sub-agents draw a bit smaller than their lead, and
++ *  every lead wears a crown, so the hierarchy reads at a glance. */
++const SUBAGENT_SCALE = 0.85;
++const CROWN = '#facc15';
+ import { renderMatrixEffect } from './matrixEffect.js';
+ import { getPetSpriteData } from './petEntity.js';
+ 
+@@ -393,7 +399,8 @@ export function renderScene(
+     const spriteData = getCharacterSprite(ch, sprites);
+     const cached = getCachedSprite(spriteData, zoom);
+     // Sitting offset: shift character down when seated so they visually sit in the chair
+-    const sittingOffset = ch.state === CharacterState.TYPE ? CHARACTER_SITTING_OFFSET_PX : 0;
++    const sittingOffset =
++      ch.state === CharacterState.TYPE && ch.cmPose !== 'stand' ? CHARACTER_SITTING_OFFSET_PX : 0;
+     // Anchor at bottom-center of character — round to integer device pixels
+     const drawX = Math.round(offsetX + ch.x * zoom - cached.width / 2);
+     const drawY = Math.round(offsetY + (ch.y + sittingOffset) * zoom - cached.height);
+@@ -445,21 +452,51 @@ export function renderScene(
+       });
+     }
+ 
++    const isSub = ch.isSubagent;
+     drawables.push({
+       zY: charZY,
+       draw: (c) => {
+-        if (alpha === 1) {
++        c.save();
++        if (alpha !== 1) c.globalAlpha = alpha;
++        if (isSub) {
++          const w = Math.round(cached.width * SUBAGENT_SCALE);
++          const h = Math.round(cached.height * SUBAGENT_SCALE);
++          c.drawImage(cached, drawX + Math.round((cached.width - w) / 2), drawY + (cached.height - h), w, h);
++        } else {
+           c.drawImage(cached, drawX, drawY);
+-          return;
++          // Crown, centered on the head (the sprite has ~8px of air on top).
++          const px = zoom;
++          const cx = drawX + cached.width / 2;
++          const top = drawY + 5 * px;
++          c.fillStyle = CROWN;
++          c.fillRect(cx - 4 * px, top + 2 * px, 8 * px, 2 * px);
++          c.fillRect(cx - 4 * px, top, 2 * px, 2 * px);
++          c.fillRect(cx - 1 * px, top - 1 * px, 2 * px, 3 * px);
++          c.fillRect(cx + 2 * px, top, 2 * px, 2 * px);
+         }
+-        c.save();
+-        c.globalAlpha = alpha;
+-        c.drawImage(cached, drawX, drawY);
+         c.restore();
+       },
+     });
+   }
+ 
++  // claude-monitor patch: the doormat agents walk in and out through.
++  if (claudeMonitorDoor) {
++    const dx = offsetX + claudeMonitorDoor.col * TILE_SIZE * zoom;
++    const dy = offsetY + claudeMonitorDoor.row * TILE_SIZE * zoom;
++    const s = TILE_SIZE * zoom;
++    drawables.push({
++      zY: claudeMonitorDoor.row * TILE_SIZE,
++      draw: (c) => {
++        c.fillStyle = '#5b3a1e';
++        c.fillRect(dx, dy + s * 0.15, s, s * 0.85);
++        c.fillStyle = '#8b5a2b';
++        c.fillRect(dx + zoom, dy + s * 0.15 + zoom, s - 2 * zoom, s * 0.85 - 2 * zoom);
++        c.fillStyle = '#c08a4a';
++        for (let i = 0; i < 3; i++) c.fillRect(dx + 3 * zoom, dy + s * 0.35 + i * 3 * zoom, s - 6 * zoom, zoom);
++      },
++    });
++  }
++
+   // ── Pets ──────────────────────────────────────────────
+   for (const pet of pets) {
+     const petSprites = getPetSprites(pet.petType);
+@@ -779,6 +816,26 @@ function renderBubbles(
+     // bubble, so skip the bubble for it.
+     if (ch.bubbleType === 'waiting' && ch.waitingAwaitingInput) continue;
+ 
++    if (ch.bubbleType === 'talk') {
++      // claude-monitor patch: speech bubble that alternates between the two
++      // talking, as if taking turns.
++      const turn = Math.floor(performance.now() / 800 + Math.abs(ch.id)) % 2;
++      if (turn !== 0) continue;
++      const sit = ch.state === CharacterState.TYPE && ch.cmPose !== 'stand' ? BUBBLE_SITTING_OFFSET_PX : 0;
++      const bw = 11 * zoom;
++      const bh = 8 * zoom;
++      const bx = Math.round(offsetX + ch.x * zoom - bw / 2);
++      const by = Math.round(offsetY + (ch.y + sit - BUBBLE_VERTICAL_OFFSET_PX) * zoom - bh - 3 * zoom);
++      ctx.fillStyle = '#f8fafc';
++      ctx.fillRect(bx, by, bw, bh);
++      ctx.fillRect(bx + 2 * zoom, by + bh, 3 * zoom, 2 * zoom);
++      ctx.fillStyle = '#334155';
++      ctx.fillRect(bx + 2 * zoom, by + 2 * zoom, 7 * zoom, zoom);
++      ctx.fillRect(bx + 2 * zoom, by + 4 * zoom, 7 * zoom, zoom);
++      ctx.fillRect(bx + 2 * zoom, by + 6 * zoom, 4 * zoom, zoom);
++      continue;
++    }
++
+     const sprite =
+       ch.bubbleType === 'permission' ? BUBBLE_PERMISSION_SPRITE : BUBBLE_WAITING_SPRITE;
+ 
+diff --git a/webview-ui/src/office/types.ts b/webview-ui/src/office/types.ts
+index 980c93e..bb8a770 100644
+--- a/webview-ui/src/office/types.ts
++++ b/webview-ui/src/office/types.ts
+@@ -201,7 +201,14 @@ export interface Character {
+   /** Assigned seat uid, or null if no seat */
+   seatId: string | null;
+   /** Active speech bubble type, or null if none showing */
+-  bubbleType: 'permission' | 'waiting' | null;
++  bubbleType: 'permission' | 'waiting' | 'talk' | null;
++  /** Local patch (claude-monitor): pose while on an errand seat — standing at a
++   *  shelf or next to someone, or sitting still on a sofa. See claudeMonitor.ts. */
++  cmPose?: 'sit' | 'stand';
++  /** Local patch (claude-monitor): keep it at its (errand) seat even while the
++   *  agent is not active — resting on the sofa, walking out the door. It only
++   *  steers movement; `isActive` keeps meaning what the agent is doing. */
++  cmHold?: boolean;
+   /** Only meaningful while bubbleType === 'waiting': true when the agent went
+    *  idle waiting on the user (surfaces the "Waiting for input" label);
+    *  false/undefined when the agent simply finished its turn (checkmark only,
+diff --git a/webview-ui/src/testHooks.ts b/webview-ui/src/testHooks.ts
+index b31bd60..c761bc8 100644
+--- a/webview-ui/src/testHooks.ts
++++ b/webview-ui/src/testHooks.ts
+@@ -11,7 +11,7 @@ declare global {
+         id: number;
+         matrixEffect: 'spawn' | 'despawn' | null;
+         agentName?: string;
+-        bubbleType: 'permission' | 'waiting' | null;
++        bubbleType: 'permission' | 'waiting' | 'talk' | null;
+         waitingAwaitingInput?: boolean;
+         isHeadless?: boolean;
+         isGreeter?: boolean;
+diff --git a/webview-ui/test/claudeMonitor.test.ts b/webview-ui/test/claudeMonitor.test.ts
+new file mode 100644
+index 0000000..4e4d147
+--- /dev/null
++++ b/webview-ui/test/claudeMonitor.test.ts
+@@ -0,0 +1,168 @@
++/**
++ * claude-monitor patch: errands (library, sofa, talking), walking in/out
++ * through the door, and the per-account filter. Runs the real OfficeState on
++ * an all-floor layout and simulates time in small steps, like the game loop.
++ *
++ * Run with: npm test
++ */
++
++import assert from 'node:assert/strict';
++
++import { test } from 'vitest';
++
++import { OfficeState } from '../src/office/engine/officeState.js';
++import type { OfficeLayout } from '../src/office/types.js';
++import { Direction, TileType } from '../src/office/types.js';
++
++function floorLayout(cols = 12, rows = 10): OfficeLayout {
++  return { version: 1, cols, rows, tiles: new Array<TileType>(cols * rows).fill(TileType.FLOOR_1), furniture: [] };
++}
++
++function run(os: OfficeState, seconds: number): void {
++  for (let t = 0; t < seconds; t += 0.05) os.update(0.05);
++}
++
++/** An office past its warm-up, with one agent sitting at a desk seat. */
++function office() {
++  const os = new OfficeState(floorLayout());
++  os.seats.set('desk', { uid: 'desk', seatCol: 2, seatRow: 2, facingDir: Direction.UP, assigned: false });
++  run(os, 6); // warm-up: restored agents appear in place, only new ones walk in
++  os.addAgent(1, 0, 0, 'desk');
++  const ch = os.characters.get(1)!;
++  ch.matrixEffect = null;
++  return { os, ch };
++}
++
++test('a new session walks in from the door (bottom row) to its desk', () => {
++  const { os, ch } = office();
++  os.cm.arrive(1);
++  assert.equal(ch.tileRow, 9, 'starts on the bottom row: the door');
++  run(os, 10);
++  assert.deepEqual([ch.tileCol, ch.tileRow], [2, 2], 'ends at its desk');
++});
++
++test('closing a session walks it out through the door before it fades', () => {
++  const { os, ch } = office();
++  os.removeAgent(1);
++  assert.equal(os.cm.isLeaving(ch), true);
++  assert.equal(ch.matrixEffect, null, 'does not vanish on the spot');
++  run(os, 12);
++  assert.equal(os.characters.has(1), false, 'gone after reaching the door');
++});
++
++test('thinking for a while sends it to the bookshelf; a tool brings it back', () => {
++  const { os, ch } = office();
++  os.layout.furniture.push({ uid: 'shelf', type: 'BOOKSHELF', col: 8, row: 0 });
++  os.setAgentActive(1, true);
++  run(os, 12);
++  assert.deepEqual([ch.tileCol, ch.tileRow], [8, 1], 'standing right below the shelf');
++  assert.equal(ch.cmPose, 'stand');
++  os.cm.toolStart(1, 't1', 'Bash', false);
++  run(os, 10);
++  assert.deepEqual([ch.tileCol, ch.tileRow], [2, 2], 'back at its desk');
++  assert.equal(ch.cmPose, undefined);
++});
++
++test('with nothing going on it rests on the sofa, not in the library', () => {
++  const { os, ch } = office();
++  os.layout.furniture.push({ uid: 'shelf', type: 'BOOKSHELF', col: 8, row: 0 });
++  os.layout.furniture.push({ uid: 'sofa', type: 'SOFA_FRONT', col: 9, row: 6 });
++  os.seats.set('sofa', { uid: 'sofa', seatCol: 9, seatRow: 6, facingDir: Direction.DOWN, assigned: false });
++  os.setAgentActive(1, false); // turn over
++  run(os, 12);
++  assert.deepEqual([ch.tileCol, ch.tileRow], [9, 6], 'on the sofa');
++  assert.equal(ch.cmPose, 'sit');
++  run(os, 60);
++  assert.deepEqual([ch.tileCol, ch.tileRow], [9, 6], 'stays there instead of wandering off');
++  os.setAgentActive(1, true);
++  os.cm.toolStart(1, 't', 'Edit', false);
++  run(os, 12);
++  assert.deepEqual([ch.tileCol, ch.tileRow], [2, 2], 'back to the desk when work starts');
++});
++
++test('still "active" but quiet for long is idle: sofa, not library', () => {
++  const { os, ch } = office();
++  os.layout.furniture.push({ uid: 'shelf', type: 'BOOKSHELF', col: 8, row: 0 });
++  os.layout.furniture.push({ uid: 'sofa', type: 'SOFA_FRONT', col: 9, row: 6 });
++  os.seats.set('sofa', { uid: 'sofa', seatCol: 9, seatRow: 6, facingDir: Direction.DOWN, assigned: false });
++  os.setAgentActive(1, true);
++  run(os, 12);
++  assert.deepEqual([ch.tileCol, ch.tileRow], [8, 1], 'right after work: thinking at the shelf');
++  run(os, 50);
++  assert.deepEqual([ch.tileCol, ch.tileRow], [9, 6], 'much later: resting on the sofa');
++});
++
++test('a lead waiting on its sub-agent stays at its desk; its seat persists', () => {
++  const { os, ch } = office();
++  os.layout.furniture.push({ uid: 'sofa', type: 'SOFA_FRONT', col: 9, row: 6 });
++  os.seats.set('sofa', { uid: 'sofa', seatCol: 9, seatRow: 6, facingDir: Direction.DOWN, assigned: false });
++  os.setAgentActive(1, true);
++  os.cm.toolStart(1, 'fg', 'Agent', false);
++  run(os, 60);
++  assert.deepEqual([ch.tileCol, ch.tileRow], [2, 2], 'directing from its desk, not on the sofa');
++  assert.equal(os.getPersistableSeats()[1].seatId, 'desk');
++});
++
++test('a lead talking to its sub-agent walks next to it and both get a speech bubble', () => {
++  const { os, ch } = office();
++  os.setAgentActive(1, true);
++  os.cm.toolStart(1, 'x', 'Bash', false); // busy, so it does not wander off to think
++  const subId = os.addSubagent(1, 'toolu_1');
++  const sub = os.characters.get(subId)!;
++  sub.matrixEffect = null;
++  Object.assign(sub, { tileCol: 8, tileRow: 5, x: 8 * 16 + 8, y: 5 * 16 + 8 });
++  os.cm.toolStart(subId, 's', 'Read', false);
++  os.cm.talk(1, subId);
++  run(os, 4);
++  const d = Math.abs(ch.tileCol - sub.tileCol) + Math.abs(ch.tileRow - sub.tileRow);
++  assert.ok(d <= 2, `next to the sub-agent (distance ${d})`);
++  assert.equal(ch.bubbleType, 'talk');
++  assert.equal(sub.bubbleType, 'talk');
++  run(os, 12);
++  assert.deepEqual([ch.tileCol, ch.tileRow], [2, 2], 'back at its desk after the talk');
++  assert.equal(ch.bubbleType, null);
++});
++
++test('a new sub-agent takes the free desk closest to its lead', () => {
++  const { os } = office();
++  os.seats.set('near', { uid: 'near', seatCol: 4, seatRow: 2, facingDir: Direction.UP, assigned: false });
++  os.seats.set('far', { uid: 'far', seatCol: 11, seatRow: 9, facingDir: Direction.UP, assigned: false });
++  const subId = os.addSubagent(1, 'toolu_1');
++  const sub = os.characters.get(subId)!;
++  assert.equal(sub.seatId, 'near');
++  sub.matrixEffect = null;
++  run(os, 8);
++  assert.deepEqual([sub.tileCol, sub.tileRow], [4, 2], 'sitting next to its lead');
++  os.removeSubagent(1, 'toolu_1');
++  assert.equal(os.seats.get('near')!.assigned, false, 'the desk is free again once it leaves');
++});
++
++test('with a meeting room, both talkers go sit at the meeting table', () => {
++  const { os, ch } = office();
++  os.setAgentActive(1, true);
++  os.cm.toolStart(1, 'x', 'Bash', false);
++  os.layout.furniture.push({ uid: 'm1', type: 'WOODEN_CHAIR_SIDE', col: 8, row: 7 });
++  os.layout.furniture.push({ uid: 'm2', type: 'WOODEN_CHAIR_SIDE:left', col: 10, row: 7 });
++  os.seats.set('m1', { uid: 'm1', seatCol: 8, seatRow: 7, facingDir: Direction.RIGHT, assigned: false });
++  os.seats.set('m2', { uid: 'm2', seatCol: 10, seatRow: 7, facingDir: Direction.LEFT, assigned: false });
++  const subId = os.addSubagent(1, 'toolu_1');
++  const sub = os.characters.get(subId)!;
++  sub.matrixEffect = null;
++  os.cm.toolStart(subId, 's', 'Read', false);
++  os.cm.talk(subId, 1);
++  run(os, 8);
++  const seats = [[ch.tileCol, ch.tileRow], [sub.tileCol, sub.tileRow]].map((p) => p.join(',')).sort();
++  assert.deepEqual(seats, ['10,7', '8,7'], 'both at the meeting chairs');
++  assert.equal(ch.bubbleType, 'talk');
++  run(os, 15);
++  assert.deepEqual([ch.tileCol, ch.tileRow], [2, 2], 'lead back at its desk after the meeting');
++});
++
++test('the account filter hides a session and its sub-agents from drawing and clicks', () => {
++  const { os } = office();
++  const subId = os.addSubagent(1, 'toolu_1');
++  os.cm.setVisible([99]);
++  assert.equal(os.getCharacters().some((c) => c.id === 1 || c.id === subId), false);
++  os.cm.setVisible(null);
++  assert.equal(os.getCharacters().some((c) => c.id === 1), true);
++});
+diff --git a/webview-ui/test/claudeMonitorEdificio.test.ts b/webview-ui/test/claudeMonitorEdificio.test.ts
+new file mode 100644
+index 0000000..e2f11f9
+--- /dev/null
++++ b/webview-ui/test/claudeMonitorEdificio.test.ts
+@@ -0,0 +1,159 @@
++/**
++ * claude-monitor patch: the real "edificio" layout with the real furniture
++ * catalog (manifests from public/assets; sprites faked — seats, desks and
++ * footprints are all this needs). Checks each behavior ends in its room.
++ *
++ * Run with: npm test
++ */
++
++import assert from 'node:assert/strict';
++import * as fs from 'node:fs';
++import * as path from 'node:path';
++
++import { beforeAll, test } from 'vitest';
++
++import { OfficeState } from '../src/office/engine/officeState.js';
++import { buildDynamicCatalog } from '../src/office/layout/furnitureCatalog.js';
++import type { OfficeLayout } from '../src/office/types.js';
++
++const ASSETS = path.join(__dirname, '..', 'public', 'assets');
++
++type Asset = Record<string, unknown> & { id: string };
++
++function loadCatalog(): void {
++  const catalog: Asset[] = [];
++  const walk = (m: Record<string, unknown>, group: Record<string, unknown>) => {
++    if (m.type === 'asset') {
++      catalog.push({
++        ...m,
++        id: m.id as string,
++        label: m.id,
++        category: group.category,
++        isDesk: group.category === 'desks',
++        canPlaceOnWalls: group.canPlaceOnWalls,
++        canPlaceOnSurfaces: group.canPlaceOnSurfaces,
++        backgroundTiles: m.backgroundTiles ?? group.backgroundTiles,
++      } as Asset);
++    } else for (const x of (m.members as Record<string, unknown>[]) ?? []) walk(x, group);
++  };
++  for (const dir of fs.readdirSync(path.join(ASSETS, 'furniture'))) {
++    const manifest = JSON.parse(fs.readFileSync(path.join(ASSETS, 'furniture', dir, 'manifest.json'), 'utf8'));
++    walk(manifest, manifest);
++  }
++  const sprites = Object.fromEntries(catalog.map((a) => [a.id, [['#000']]]));
++  assert.ok(buildDynamicCatalog({ catalog, sprites } as never), 'catalog built');
++}
++
++function edificio(): OfficeLayout {
++  return JSON.parse(fs.readFileSync(path.join(ASSETS, 'claude-monitor-layout.json'), 'utf8'));
++}
++
++const area = (os: OfficeState, col: number, row: number) =>
++  os.layout.areaTiles?.[row * os.layout.cols + col] ?? null;
++
++function run(os: OfficeState, seconds: number): void {
++  for (let t = 0; t < seconds; t += 0.05) os.update(0.05);
++}
++
++beforeAll(loadCatalog);
++
++function office() {
++  const os = new OfficeState(edificio());
++  run(os, 6);
++  os.addAgent(1, 0, 0);
++  const ch = os.characters.get(1)!;
++  ch.matrixEffect = null;
++  return { os, ch };
++}
++
++test('the building has desks, sofas, shelves and meeting chairs', () => {
++  const os = new OfficeState(edificio());
++  const areas = [...os.seats.values()].map((s) => area(os, s.seatCol, s.seatRow));
++  const count = (a: string) => areas.filter((x) => x === a).length;
++  assert.ok(count('Trabajo') >= 8, `desks in Trabajo: ${count('Trabajo')}`);
++  assert.ok(count('Despacho') >= 2, `desks in Despacho: ${count('Despacho')}`);
++  assert.ok(count('Descanso') >= 8, `sofa seats in Descanso: ${count('Descanso')}`);
++  assert.ok(count('Reuniones') >= 8, `meeting chairs: ${count('Reuniones')}`);
++});
++
++test('an agent with nothing to do rests on a sofa in Descanso', () => {
++  const { os, ch } = office();
++  os.setAgentActive(1, false);
++  run(os, 40);
++  assert.equal(area(os, ch.tileCol, ch.tileRow), 'Descanso', `at ${ch.tileCol},${ch.tileRow}`);
++  assert.equal(ch.cmPose, 'sit');
++});
++
++test('when claude-monitor says it waits for you, it rests even if the office thinks it is busy', () => {
++  const { os, ch } = office();
++  os.setAgentActive(1, true);
++  os.cm.toolStart(1, 'stuck', 'Bash', false); // a tool-done that never arrived
++  run(os, 10);
++  assert.notEqual(area(os, ch.tileCol, ch.tileRow), 'Descanso', 'on its own it stays working');
++  for (let t = 0; t < 30; t += 0.05) {
++    if (Math.round(t * 20) % 30 === 0) os.cm.setExternalState(1, 'esperando');
++    os.update(0.05);
++  }
++  assert.equal(area(os, ch.tileCol, ch.tileRow), 'Descanso', `at ${ch.tileCol},${ch.tileRow}`);
++});
++
++test('an agent thinking right after a tool reads in the Biblioteca', () => {
++  const { os, ch } = office();
++  os.setAgentActive(1, true);
++  run(os, 30);
++  assert.equal(area(os, ch.tileCol, ch.tileRow), 'Biblioteca', `at ${ch.tileCol},${ch.tileRow}`);
++});
++
++test('leads sit in the Despacho and their sub-agents work in Trabajo', () => {
++  const { os, ch } = office();
++  os.setAgentActive(1, true);
++  os.cm.toolStart(1, 'x', 'Bash', false);
++  const subId = os.addSubagent(1, 'toolu_1');
++  const sub = os.characters.get(subId)!;
++  sub.matrixEffect = null;
++  os.cm.toolStart(subId, 's', 'Edit', false);
++  run(os, 25);
++  assert.equal(area(os, ch.tileCol, ch.tileRow), 'Despacho', `lead at ${ch.tileCol},${ch.tileRow}`);
++  assert.equal(area(os, sub.tileCol, sub.tileRow), 'Trabajo', `sub at ${sub.tileCol},${sub.tileRow}`);
++});
++
++test('a finished sub-agent reports to its lead in Reuniones, then walks out', () => {
++  const { os, ch } = office();
++  os.setAgentActive(1, true);
++  os.cm.toolStart(1, 'x', 'Bash', false);
++  const subId = os.addSubagent(1, 'toolu_1');
++  const sub = os.characters.get(subId)!;
++  sub.matrixEffect = null;
++  os.cm.toolStart(subId, 's', 'Edit', false);
++  run(os, 20);
++  os.removeSubagent(1, 'toolu_1');
++  run(os, 14);
++  assert.equal(area(os, sub.tileCol, sub.tileRow), 'Reuniones', `reporting at ${sub.tileCol},${sub.tileRow}`);
++  assert.equal(area(os, ch.tileCol, ch.tileRow), 'Reuniones', 'its lead is there too');
++  run(os, 40);
++  assert.equal(os.characters.has(subId), false, 'then it walked out the door');
++  assert.equal(area(os, ch.tileCol, ch.tileRow), 'Despacho', 'and the lead went back to its desk');
++});
++
++test('a lead and its sub-agent talking meet in Reuniones', () => {
++  const { os, ch } = office();
++  os.setAgentActive(1, true);
++  os.cm.toolStart(1, 'x', 'Bash', false);
++  const subId = os.addSubagent(1, 'toolu_1');
++  const sub = os.characters.get(subId)!;
++  sub.matrixEffect = null;
++  os.cm.toolStart(subId, 's', 'Read', false);
++  run(os, 3);
++  os.cm.talk(subId, 1);
++  // Seats are assigned at random, so the walk varies: they must meet within
++  // the walk allowance (20 s), wherever each one started.
++  let met = false;
++  for (let t = 0; t < 22 && !met; t += 0.05) {
++    os.update(0.05);
++    met =
++      area(os, ch.tileCol, ch.tileRow) === 'Reuniones' &&
++      area(os, sub.tileCol, sub.tileRow) === 'Reuniones' &&
++      ch.bubbleType === 'talk';
++  }
++  assert.ok(met, `met in Reuniones (lead ${ch.tileCol},${ch.tileRow} · sub ${sub.tileCol},${sub.tileRow})`);
++});

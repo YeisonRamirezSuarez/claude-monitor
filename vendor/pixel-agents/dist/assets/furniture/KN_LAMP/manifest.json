@@ -1,0 +1,14 @@
+{
+  "id": "KN_LAMP",
+  "name": "Lámpara de pie (Kenney)",
+  "category": "decor",
+  "type": "asset",
+  "file": "KN_LAMP.png",
+  "width": 16,
+  "height": 48,
+  "footprintW": 1,
+  "footprintH": 3,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 2
+}

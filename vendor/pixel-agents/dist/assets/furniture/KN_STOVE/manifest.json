@@ -1,0 +1,14 @@
+{
+  "id": "KN_STOVE",
+  "name": "Cocina (Kenney)",
+  "category": "misc",
+  "type": "asset",
+  "file": "KN_STOVE.png",
+  "width": 32,
+  "height": 32,
+  "footprintW": 2,
+  "footprintH": 2,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

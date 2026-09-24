@@ -1,0 +1,7 @@
+{
+  "name": "pixel-agents",
+  "version": "1.4.1",
+  "license": "MIT",
+  "type": "commonjs",
+  "private": true
+}

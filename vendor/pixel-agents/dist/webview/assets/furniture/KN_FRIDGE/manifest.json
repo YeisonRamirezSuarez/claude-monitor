@@ -1,0 +1,14 @@
+{
+  "id": "KN_FRIDGE",
+  "name": "Nevera (Kenney)",
+  "category": "misc",
+  "type": "asset",
+  "file": "KN_FRIDGE.png",
+  "width": 16,
+  "height": 32,
+  "footprintW": 1,
+  "footprintH": 2,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 1
+}

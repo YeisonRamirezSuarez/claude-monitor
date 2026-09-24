@@ -1,0 +1,14 @@
+{
+  "id": "KN_PIANO",
+  "name": "Piano (Kenney)",
+  "category": "decor",
+  "type": "asset",
+  "file": "KN_PIANO.png",
+  "width": 32,
+  "height": 32,
+  "footprintW": 2,
+  "footprintH": 2,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 1
+}
