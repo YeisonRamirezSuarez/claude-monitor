@@ -563,6 +563,7 @@ export async function agentesVivos(profiles: Profile[], ahoraMs = Date.now()): P
         nota: '',
         cwd: viva.cwd,
         origen: viva.entrypoint === 'claude-desktop' ? 'desktop' : 'terminal',
+        transcript: ruta ?? '',
         estado: estadoDe(crudo.status, act),
         herramienta: act.herramienta,
         detalle: act.detalle,

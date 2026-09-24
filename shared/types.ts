@@ -193,6 +193,8 @@ export type AgenteOficina = {
   nombre: string;
   cwd: string;
   origen: 'terminal' | 'desktop';
+  /** Su transcript, o '' si no está donde se lo espera. */
+  transcript: string;
   estado: EstadoAgente;
   herramienta: string;
   detalle: string;
@@ -319,6 +321,9 @@ export type ClaudeMonitorApi = {
   oficina: () => Promise<Result<AgenteOficina[]>>;
   /** La URL de la oficina de Pixel Agents, arrancándola si hace falta. */
   oficinaPixel: () => Promise<Result<string>>;
+  /** Hace entrar a la oficina sesiones vivas que Pixel Agents todavía no vio
+   *  (quietas desde antes de que abriera). */
+  adoptarEnPixel: (sesiones: Array<{ sessionId: string; transcript: string; cwd: string }>) => Promise<Result<null>>;
   /** Abre la Oficina en vivo en su propia ventana, o la trae al frente. */
   abrirOficina: () => Promise<Result<null>>;
   /** Qué sesión es cada personaje de Pixel Agents (por su id numérico). */

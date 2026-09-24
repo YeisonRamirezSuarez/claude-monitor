@@ -245,6 +245,18 @@ export default function Oficina({ profiles, enVentana = false, onClose }: Props)
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose, abierta]);
 
+  // Las abiertas que la oficina no tiene entran solas, una vez cada una: si
+  // Pixel Agents no las toma (Watch All Sessions apagado), quedan en la lista
+  // plegada de abajo.
+  const adoptadas = useRef(new Set<string>());
+  useEffect(() => {
+    if (!origen || pixel.length === 0) return;
+    const faltan = agentes.filter((a) => a.transcript && !enPixel.has(a.sessionId) && !adoptadas.current.has(a.sessionId));
+    if (faltan.length === 0) return;
+    for (const a of faltan) adoptadas.current.add(a.sessionId);
+    window.claudeMonitor.adoptarEnPixel(faltan.map((a) => ({ sessionId: a.sessionId, transcript: a.transcript, cwd: a.cwd })));
+  }, [agentes, pixel, origen, enPixel]);
+
   const enOficina = visibles.filter((a) => enPixel.has(a.sessionId));
   const quietas = visibles.filter((a) => !enPixel.has(a.sessionId));
 

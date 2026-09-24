@@ -637,6 +637,27 @@ function registerHandlers() {
   // La oficina pixel art completa (editor, mascotas…) es Pixel Agents: se
   // arranca la primera vez que se abre la pestaña y vive hasta cerrar la app.
   handle('oficina:pixel', () => urlOficina());
+  // Pixel Agents sólo adopta una sesión cuando escribe algo, así que una que
+  // estaba quieta desde antes de abrir la oficina no aparecía. Se le manda lo
+  // mismo que mandaría el hook: SessionStart (la deja pendiente) y la
+  // Notification "idle_prompt" que la confirma — entra esperando tu input.
+  handle('oficina:adoptar', async (sesiones: Array<{ sessionId: string; transcript: string; cwd: string }>) => {
+    const url = new URL(await urlOficina());
+    const token = url.searchParams.get('token') ?? '';
+    const enviar = (cuerpo: Record<string, unknown>) =>
+      fetch(`${url.origin}/api/hooks/claude`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(cuerpo)
+      });
+    for (const s of Array.isArray(sesiones) ? sesiones.slice(0, 50) : []) {
+      if (typeof s?.sessionId !== 'string' || typeof s.transcript !== 'string' || !s.transcript) continue;
+      const base = { session_id: s.sessionId, transcript_path: s.transcript, cwd: s.cwd };
+      await enviar({ ...base, hook_event_name: 'SessionStart', source: 'startup' });
+      await enviar({ ...base, hook_event_name: 'Notification', notification_type: 'idle_prompt' });
+    }
+    return null;
+  });
   handle('oficina:abrir', async () => {
     abrirOficina();
     return null;

@@ -29,6 +29,7 @@ const api: ClaudeMonitorApi = {
   oficina: () => ipcRenderer.invoke('oficina:estado'),
   oficinaPixel: () => ipcRenderer.invoke('oficina:pixel'),
   abrirOficina: () => ipcRenderer.invoke('oficina:abrir'),
+  adoptarEnPixel: (sesiones) => ipcRenderer.invoke('oficina:adoptar', sesiones),
   mapaPixel: () => ipcRenderer.invoke('oficina:mapaPixel'),
   equipo: (sessionId) => ipcRenderer.invoke('oficina:equipo', sessionId),
   nombrar: (clave, nombre, nota) => ipcRenderer.invoke('oficina:nombrar', clave, nombre, nota),
