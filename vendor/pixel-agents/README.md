@@ -19,9 +19,10 @@ Qué agrega el parche:
 - **Edificio** (`edificio-layout.json`, generado por `scripts/claude-monitor-layout.mjs`): una sola
   oficina con salas — Despacho, Trabajo, Biblioteca (pensar), Descanso (sofás: esperar / sin
   actividad), Reuniones (los que se hablan van a sentarse a la mesa) — y la puerta al pie del
-  pasillo. Se instala en `~/.pixel-agents/layout.json`; el anterior queda como
-  `layout.antes-del-edificio-*.json`. Los subagentes se sientan en el escritorio libre más cercano
-  a su principal.
+  pasillo. Viene como plano por defecto (`assets/default-layout-2.json`, revisión 2): una
+  instalación nueva lo recibe, y un `~/.pixel-agents/layout.json` que sigue en la oficina original
+  (revisión 1) se reemplaza solo. Los subagentes se sientan en el escritorio libre más cercano a su
+  principal.
 - **Muebles de Kenney** (`KN_*`, ver `KENNEY-LICENSE.txt`): mesas de reunión, sillas, sillones, cocina,
   piano, lámparas y plantas de "Roguelike Indoors" de Kenney (www.kenney.nl), **CC0 1.0**. Se
   importan con `scripts/claude-monitor-kenney.cjs <roguelikeIndoor_transparent.png>`. Las
@@ -30,6 +31,12 @@ Qué agrega el parche:
   las sesiones que ya no están vivas en el registro; Pixel Agents sólo se enteraba por el hook
   `SessionEnd`, que falta en las cuentas sin hooks. Los subagentes que se lanzaron antes de que
   abriera la oficina se adoptan igual (transcript escrito en los últimos 3 min).
+- **Opciones de la oficina:** "Watch All Sessions", etiquetas siempre visibles y salas visibles se
+  prenden en cada arranque (`cli.ts`; también son el valor por defecto en `configPersistence.ts`).
+  Sin "Watch All Sessions" una PC sin los hooks aprobados no veía ninguna sesión, y la 0.19.0 lo
+  dejaba guardado apagado.
+- **Ciclo de vida:** arranca con la app y se cierra con ella; si la app muere sin cerrarlo, se va
+  solo (`PIXEL_AGENTS_PARENT_PID`). Si no, el huérfano seguía y el próximo arranque lo reusaba.
 - **Nombres:** las etiquetas usan los nombres de `%APPDATA%\claude-monitor\nombres.json`, y si no hay,
   el nombre de la sesión del registro de Claude Code (no la carpeta).
 - **Build:** el CLI va con fastify adentro (sin `external` en esbuild): el portable de Electron

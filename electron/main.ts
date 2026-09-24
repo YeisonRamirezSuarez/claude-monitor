@@ -815,6 +815,9 @@ app.whenReady().then(async () => {
   anotar('panel: arrancado', { protocoloNuestro: tenemosElProtocolo(), empaquetada: app.isPackaged });
   registerHandlers();
   createWindow();
+  // La oficina arranca con la app: al abrirla ya tiene a los agentes que
+  // vio mientras tanto. Se cierra con ella (`will-quit`).
+  urlOficina().catch((e) => anotar('pixel-agents: no arrancó', { error: String(e) }));
   // Windows puede haber lanzado la app PARA entregar un enlace: entonces no
   // llega por `second-instance` sino en la línea de comandos del arranque.
   const url = enlaceEn(process.argv);

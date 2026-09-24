@@ -33,7 +33,9 @@ export function urlOficina(): Promise<string> {
   url ??= new Promise<string>((ok, mal) => {
     const hijo = spawn(process.execPath, [cli()], {
       cwd: homedir(),
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      // Con el pid de la app, el servidor se cierra solo si la app muere sin
+      // pasar por `detenerOficina` (crash, Administrador de tareas).
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PIXEL_AGENTS_PARENT_PID: String(process.pid) },
       windowsHide: true
     });
     proceso = hijo;
