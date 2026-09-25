@@ -302,6 +302,12 @@ async function carpetaDeTrabajo(cwd?: string, desde?: string, distro?: string): 
   return picked.canceled ? null : (picked.filePaths[0] ?? null);
 }
 
+/** El `claude` que abre la app. En Windows va con `--chrome`: sin la bandera
+ *  la sesión no ve la extensión de Chrome aunque su puente esté armado (ver
+ *  `chrome-host.ts`), y el usuario le pide usarla y contesta que no puede. En
+ *  WSL no: la extensión corre en el Chrome de Windows y no llega a la distro. */
+const claudeCon = (p: Profile) => (p.entorno?.tipo === 'wsl' ? 'claude' : 'claude --chrome');
+
 function registerHandlers() {
   // La lista se refresca sola cada vez que la ventana toma el foco, así que es
   // también el momento en que la app se entera de que el usuario ya terminó lo
@@ -580,7 +586,7 @@ function registerHandlers() {
       'Abrirla en otra terminal haría que los dos escriban el mismo transcript y se pisen: el "claude" de acá no ve al otro porque cada cuenta anota sus sesiones vivas en su propia carpeta.'
     );
     await requireLogin(target);
-    await openTerminalAs(session.cwd, `claude --resume ${session.id}`, target);
+    await openTerminalAs(session.cwd, `${claudeCon(target)} --resume ${session.id}`, target);
     // El aviso de cambio de cuenta por falta de cupo sólo tiene sentido en
     // Windows: ahí hay más de una cuenta candidata y cuál usar es decisión del
     // usuario. Una sesión de WSL tiene una única cuenta posible —la de su
@@ -604,7 +610,7 @@ function registerHandlers() {
     // `abrirEnWsl` YA hace `windowsAPosix(distro, cwd)` antes del `--cd`, y
     // si la carpeta es de OTRA distro, es ahí donde se explica que desde ésta
     // no se ve. Traducir acá también dejaría dos lugares con la misma regla.
-    await openTerminalAs(dir, 'claude', profile);
+    await openTerminalAs(dir, claudeCon(profile), profile);
     return { relevo };
   });
   // Leer el transcript completo, para verlo dentro de la app. La terminal
