@@ -10,3 +10,4 @@ debug.log
 
 # Pixel Agents vendorizado: su dist/ ES el código que se empaqueta (ver vendor/pixel-agents/README.md)
 !vendor/pixel-agents/dist/
+.worktrees/
