@@ -3,6 +3,7 @@ import Sidebar from './Sidebar';
 import TranscriptView from './Transcript';
 import SessionList from './SessionList';
 import LogsPanel from './LogsPanel';
+import TelegramPanel from './TelegramPanel';
 import type { ProfileList, Raiz, Result, SessionMeta, SessionTokens } from '../shared/types';
 
 /** Desempaqueta un Result: devuelve los datos, o setea el error y devuelve null. */
@@ -33,6 +34,7 @@ export default function App() {
   const [pendingLogin, setPendingLogin] = useState<{ id: string; name: string; needsExtension: boolean } | null>(null);
   const [loginCode, setLoginCode] = useState('');
   const [showLogs, setShowLogs] = useState(false);
+  const [showTelegram, setShowTelegram] = useState(false);
   // Si esta app tiene el protocolo `claude://`. Decide si el login de Google de
   // Desktop se hace adentro de la ventana de cada cuenta o se va al navegador.
   const [protocoloNuestro, setProtocoloNuestro] = useState<boolean | null>(null);
@@ -423,6 +425,9 @@ export default function App() {
         <button className="link logs-toggle" onClick={() => setShowLogs(true)}>
           Ver registro
         </button>
+        <button className="link logs-toggle" onClick={() => setShowTelegram(true)}>
+          Telegram
+        </button>
         <button className="primary oficina-toggle" onClick={() => window.claudeMonitor.abrirOficina()}>
           Oficina en vivo
         </button>
@@ -497,6 +502,7 @@ export default function App() {
           onClose={() => setShowLogs(false)}
         />
       )}
+      {showTelegram && <TelegramPanel onClose={() => setShowTelegram(false)} />}
     </div>
   );
 }

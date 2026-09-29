@@ -33,7 +33,14 @@ const api: ClaudeMonitorApi = {
   mapaPixel: () => ipcRenderer.invoke('oficina:mapaPixel'),
   equipo: (sessionId) => ipcRenderer.invoke('oficina:equipo', sessionId),
   nombrar: (clave, nombre, nota) => ipcRenderer.invoke('oficina:nombrar', clave, nombre, nota),
-  conversacion: (sessionId, agentId) => ipcRenderer.invoke('oficina:conversacion', sessionId, agentId)
+  conversacion: (sessionId, agentId) => ipcRenderer.invoke('oficina:conversacion', sessionId, agentId),
+  telegramEstado: () => ipcRenderer.invoke('telegram:estado'),
+  telegramToken: (token) => ipcRenderer.invoke('telegram:token', token),
+  telegramVincular: () => ipcRenderer.invoke('telegram:vincular'),
+  telegramActivar: (activo) => ipcRenderer.invoke('telegram:activar', activo),
+  telegramUmbral: (minutos) => ipcRenderer.invoke('telegram:umbral', minutos),
+  telegramFuera: (fuera) => ipcRenderer.invoke('telegram:fuera', fuera),
+  telegramReabrir: (sessionId) => ipcRenderer.invoke('telegram:reabrir', sessionId)
 };
 
 contextBridge.exposeInMainWorld('claudeMonitor', api);

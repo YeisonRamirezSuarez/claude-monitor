@@ -1,0 +1,14 @@
+{
+  "id": "KN_MIRROR",
+  "name": "Espejo (Kenney)",
+  "category": "wall",
+  "type": "asset",
+  "file": "KN_MIRROR.png",
+  "width": 16,
+  "height": 32,
+  "footprintW": 1,
+  "footprintH": 2,
+  "canPlaceOnWalls": true,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

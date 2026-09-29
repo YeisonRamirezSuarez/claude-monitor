@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AgenteOficina, ProfileWithStatus } from '../../shared/types';
+import { sesionesAAdoptar } from './adopcion';
 import Sala from './Sala';
 
 type Props = {
@@ -66,11 +67,36 @@ export default function Oficina({ profiles, enVentana = false, onClose }: Props)
   /** Personaje de Pixel Agents -> desde cuándo su sesión no está viva. */
   const muertas = useRef(new Map<number, number>());
   const leido = useRef(false);
+  /** Sesión -> cuándo se le pidió por última vez a Pixel Agents que la adopte. */
+  const adoptadas = useRef(new Map<string, number>());
+  /** Si ya se leyó el mapa de personajes del servidor actual. Un mapa vacío
+   *  sólo quiere decir "no hay nadie" cuando ya se lo leyó: si no, es que
+   *  todavía no llegó y adoptar todo de golpe sería pedirles a todas que entren. */
+  const mapaLeido = useRef(false);
+  const urlVista = useRef('');
   /** Las sesiones vivas de la última lectura, para el clic en un personaje. */
   const vivasRef = useRef(new Set<string>());
 
+  // Se vuelve a preguntar la URL: si el servidor de Pixel Agents murió y la app
+  // lo relanzó, tiene otro puerto y token, y el iframe viejo quedaría congelado.
   useEffect(() => {
-    window.claudeMonitor.oficinaPixel().then((r) => (r.ok ? setUrlPixel(r.data) : setErrorPixel(r.error)));
+    const pedir = () =>
+      window.claudeMonitor.oficinaPixel().then((r) => {
+        if (!r.ok) return setErrorPixel(r.error);
+        setErrorPixel('');
+        if (urlVista.current === r.data) return;
+        // Servidor nuevo = oficina vacía: hay que volver a adoptar todo, sin
+        // esperar el minuto de cada sesión.
+        if (urlVista.current) {
+          adoptadas.current.clear();
+          mapaLeido.current = false;
+        }
+        urlVista.current = r.data;
+        setUrlPixel(r.data);
+      });
+    pedir();
+    const id = setInterval(pedir, 10_000);
+    return () => clearInterval(id);
   }, []);
 
   const avisar = (texto: string) => {
@@ -100,7 +126,11 @@ export default function Oficina({ profiles, enVentana = false, onClose }: Props)
     leer();
     const id = setInterval(() => {
       leer();
-      window.claudeMonitor.mapaPixel().then((r) => r.ok && setPixel(r.data));
+      window.claudeMonitor.mapaPixel().then((r) => {
+        if (!r.ok) return;
+        mapaLeido.current = true;
+        setPixel(r.data);
+      });
     }, REFRESCO_MS);
     return () => clearInterval(id);
   }, []);
@@ -245,15 +275,17 @@ export default function Oficina({ profiles, enVentana = false, onClose }: Props)
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose, abierta]);
 
-  // Las abiertas que la oficina no tiene entran solas, una vez cada una: si
-  // Pixel Agents no las toma (Watch All Sessions apagado), quedan en la lista
-  // plegada de abajo.
-  const adoptadas = useRef(new Set<string>());
+  // Las abiertas que la oficina no tiene entran solas. Cada una se reintenta a
+  // lo sumo una vez por minuto: una sesión de Desktop cuyo motor se pausó y
+  // volvió, o un personaje que Pixel Agents soltó, tiene que poder reentrar.
+  // Si Pixel Agents no las toma (Watch All Sessions apagado), quedan en la
+  // lista plegada de abajo sin que se lo pida en cada refresco.
   useEffect(() => {
-    if (!origen || pixel.length === 0) return;
-    const faltan = agentes.filter((a) => a.transcript && !enPixel.has(a.sessionId) && !adoptadas.current.has(a.sessionId));
+    if (!origen || !mapaLeido.current) return;
+    const ahora = Date.now();
+    const faltan = sesionesAAdoptar(agentes, enPixel, adoptadas.current, ahora);
     if (faltan.length === 0) return;
-    for (const a of faltan) adoptadas.current.add(a.sessionId);
+    for (const a of faltan) adoptadas.current.set(a.sessionId, ahora);
     window.claudeMonitor.adoptarEnPixel(faltan.map((a) => ({ sessionId: a.sessionId, transcript: a.transcript, cwd: a.cwd })));
   }, [agentes, pixel, origen, enPixel]);
 

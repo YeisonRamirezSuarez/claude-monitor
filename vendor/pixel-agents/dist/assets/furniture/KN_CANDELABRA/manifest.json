@@ -1,0 +1,14 @@
+{
+  "id": "KN_CANDELABRA",
+  "name": "Candelabro (Kenney)",
+  "category": "decor",
+  "type": "asset",
+  "file": "KN_CANDELABRA.png",
+  "width": 16,
+  "height": 16,
+  "footprintW": 1,
+  "footprintH": 1,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": true,
+  "backgroundTiles": 0
+}

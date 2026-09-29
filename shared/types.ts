@@ -239,6 +239,23 @@ export type ConversacionItem =
 
 export type Conversacion = { cwd: string; items: ConversacionItem[]; truncada: boolean };
 
+/** Lo que muestra la sección de Telegram en la configuración. */
+export type EstadoTelegram = {
+  activo: boolean;
+  /** @usuario del bot, '' si no hay token válido. */
+  bot: string;
+  vinculado: boolean;
+  /** El código vigente para /vincular, '' si no hay. */
+  codigo: string;
+  umbralMin: number;
+  fuera: boolean;
+  motivo: 'manual' | 'tapa' | 'inactividad' | null;
+  /** sessionIds continuadas desde Telegram. */
+  tomadas: string[];
+  /** Último error visible ('' si ninguno). */
+  error: string;
+};
+
 export type ProfileList = { activeProfileId: string; profiles: ProfileWithStatus[] };
 
 export type ClaudeMonitorApi = {
@@ -336,6 +353,13 @@ export type ClaudeMonitorApi = {
   /** La conversación con herramientas, subagentes y mensajes. Con `agentId`,
    *  la de ese subagente de la sesión. */
   conversacion: (sessionId: string, agentId?: string) => Promise<Result<Conversacion>>;
+  telegramEstado: () => Promise<Result<EstadoTelegram>>;
+  telegramToken: (token: string) => Promise<Result<EstadoTelegram>>;
+  telegramVincular: () => Promise<Result<EstadoTelegram>>;
+  telegramActivar: (activo: boolean) => Promise<Result<EstadoTelegram>>;
+  telegramUmbral: (minutos: number) => Promise<Result<EstadoTelegram>>;
+  telegramFuera: (fuera: boolean | null) => Promise<Result<EstadoTelegram>>;
+  telegramReabrir: (sessionId: string) => Promise<Result<null>>;
 };
 
 export type DesktopOpenResult = {

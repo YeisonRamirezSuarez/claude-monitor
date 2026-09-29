@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   desktopDir,
   esperandoEnlace,
@@ -6,6 +9,7 @@ import {
   newestAppDir,
   pareceClaudeDesktop,
   resumeLink,
+  sesionesDeDesktop,
   stripQuotes
 } from './desktop';
 
@@ -78,5 +82,84 @@ describe('pareceClaudeDesktop', () => {
 describe('esperandoEnlace', () => {
   it('sin ninguna apertura no se inventa un destino', () => {
     expect(esperandoEnlace()).toBeNull();
+  });
+});
+
+describe('sesionesDeDesktop', () => {
+  let raiz = '';
+  afterEach(async () => raiz && rm(raiz, { recursive: true, force: true }));
+
+  /** Un archivo `local_*.json` con la forma que deja Desktop (medida en esta máquina). */
+  async function guardar(perfil: string, archivo: string, datos: Record<string, unknown> | string) {
+    const dir = join(raiz, perfil, 'claude-code-sessions', 'cuenta', 'org');
+    await mkdir(dir, { recursive: true });
+    const ruta = join(dir, archivo);
+    await writeFile(ruta, typeof datos === 'string' ? datos : JSON.stringify(datos));
+    return ruta;
+  }
+  const sesion = (cli: string, extra: Record<string, unknown> = {}) => ({
+    sessionId: `local_${cli}`,
+    cliSessionId: cli,
+    cwd: 'C:\\proy',
+    title: 'Una tarea',
+    isArchived: false,
+    lastActivityAt: 1000,
+    ...extra
+  });
+  const nueva = async () => (raiz = await mkdtemp(join(tmpdir(), 'desktop-')));
+
+  it('dice de qué cuenta es cada sesión por su cliSessionId', async () => {
+    await nueva();
+    await guardar('aaaa1111', 'local_x.json', sesion('id-x', { title: 'Migrar Angular', cwd: 'C:\\front' }));
+    await guardar('bbbb2222', 'local_y.json', sesion('id-y', { isArchived: true }));
+    const mapa = await sesionesDeDesktop(raiz);
+    expect(mapa.get('id-x')).toMatchObject({ profileId: 'aaaa1111', title: 'Migrar Angular', cwd: 'C:\\front', archivada: false });
+    expect(mapa.get('id-y')).toMatchObject({ profileId: 'bbbb2222', archivada: true });
+    expect(mapa.size).toBe(2);
+  });
+
+  it('si el mismo cliSessionId está en varias cuentas gana la de actividad más reciente', async () => {
+    // Medido: el pozo es compartido y una sesión adoptada queda anotada en el
+    // almacén de cada Desktop que la abrió.
+    await nueva();
+    await guardar('aaaa1111', 'local_a.json', sesion('id', { lastActivityAt: 1000 }));
+    await guardar('bbbb2222', 'local_b.json', sesion('id', { lastActivityAt: 5000 }));
+    await guardar('cccc3333', 'local_c.json', sesion('id', { lastActivityAt: 3000 }));
+    expect((await sesionesDeDesktop(raiz)).get('id')?.profileId).toBe('bbbb2222');
+  });
+
+  it('una copia archivada no le gana a una abierta, por más reciente que sea', async () => {
+    await nueva();
+    await guardar('aaaa1111', 'local_a.json', sesion('id', { lastActivityAt: 1000 }));
+    await guardar('bbbb2222', 'local_b.json', sesion('id', { lastActivityAt: 5000, isArchived: true }));
+    const s = (await sesionesDeDesktop(raiz)).get('id');
+    expect(s).toMatchObject({ profileId: 'aaaa1111', archivada: false });
+  });
+
+  it('ignora lo que no se entiende: JSON roto, sin cliSessionId, otros archivos', async () => {
+    await nueva();
+    await guardar('aaaa1111', 'local_roto.json', '{"cliSessionId": "a');
+    await guardar('aaaa1111', 'local_sin.json', { sessionId: 'local_z' });
+    await guardar('aaaa1111', 'otro.json', sesion('id-otro'));
+    await guardar('aaaa1111', 'local_ok.json', sesion('id-ok'));
+    expect([...(await sesionesDeDesktop(raiz)).keys()]).toEqual(['id-ok']);
+  });
+
+  it('sin la carpeta de Desktop devuelve un mapa vacío', async () => {
+    await nueva();
+    expect((await sesionesDeDesktop(join(raiz, 'no-existe'))).size).toBe(0);
+  });
+
+  it('ve los cambios (archivar) y las bajas sin que haya que reiniciar nada', async () => {
+    await nueva();
+    const ruta = await guardar('aaaa1111', 'local_a.json', sesion('id-a'));
+    await guardar('aaaa1111', 'local_b.json', sesion('id-b'));
+    expect((await sesionesDeDesktop(raiz)).get('id-a')?.archivada).toBe(false);
+    await writeFile(ruta, JSON.stringify(sesion('id-a', { isArchived: true })));
+    // El tamaño cambia pero igual se fuerza la fecha: en algunos discos el mtime tiene resolución de segundos.
+    await utimes(ruta, new Date(Date.now() + 5000), new Date(Date.now() + 5000));
+    expect((await sesionesDeDesktop(raiz)).get('id-a')?.archivada).toBe(true);
+    await rm(join(raiz, 'aaaa1111', 'claude-code-sessions', 'cuenta', 'org', 'local_b.json'));
+    expect((await sesionesDeDesktop(raiz)).has('id-b')).toBe(false);
   });
 });

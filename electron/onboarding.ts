@@ -18,6 +18,11 @@ import { esWsl, WINDOWS } from './wsl';
  * login que abre el navegador por defecto, y la sesión de claude.ai termina en
  * el Chrome equivocado — justo lo que la app viene evitando.
  *
+ * De paso queda prendido Claude en Chrome por defecto (`claudeInChromeDefaultEnabled`,
+ * lo mismo que "Enabled by default" en `/chrome`): así toda sesión de la cuenta
+ * ve la extensión, también la que se abre a mano con `claude` o `claude --resume`
+ * sin `--chrome`. Sin eso, el agente contestaba que no podía verla.
+ *
  * Sólo se marca la presentación. El historial de uso de otra cuenta —cuántas
  * veces arrancó, qué avisos vio— no se copia: no es de esta cuenta y fingirlo
  * no arregla nada.
@@ -40,9 +45,9 @@ export function withOnboardingDone(raw: string, version = ''): string | null {
   } catch {
     return null; // ilegible: no se reescribe, se rearma solo
   }
-  if (config.hasCompletedOnboarding === true) return null;
+  if (config.hasCompletedOnboarding === true && config.claudeInChromeDefaultEnabled === true) return null;
 
-  const salida: Record<string, unknown> = { ...config, hasCompletedOnboarding: true };
+  const salida: Record<string, unknown> = { ...config, hasCompletedOnboarding: true, claudeInChromeDefaultEnabled: true };
   if (version && !salida.lastOnboardingVersion) salida.lastOnboardingVersion = version;
   return `${JSON.stringify(salida, null, 2)}\n`;
 }
@@ -73,9 +78,6 @@ export async function markOnboardingDone(
   entorno: Entorno = WINDOWS
 ): Promise<boolean> {
   if (esWsl(entorno)) return false;
-  const path = join(configDir, '.claude.json');
-  const raw = await readFile(path, 'utf8').catch(() => null);
-  if (raw === null) return false; // todavía no existe: se marca después del primer arranque
 
   let version = '';
   for (const candidato of sharedRoot ? [`${sharedRoot}.json`, join(sharedRoot, '.claude.json')] : []) {
@@ -86,10 +88,19 @@ export async function markOnboardingDone(
     }
   }
 
-  const patched = withOnboardingDone(raw, version);
-  if (patched === null) return false;
-  await writeFile(path, patched, 'utf8');
-  return true;
+  // El de la cuenta y, en la principal, también `~/.claude.json`: el que usa
+  // un `claude` abierto a mano, sin CLAUDE_CONFIG_DIR. Para otra cuenta ese
+  // segundo archivo no existe y se saltea.
+  let cambio = false;
+  for (const path of [join(configDir, '.claude.json'), `${configDir}.json`]) {
+    const raw = await readFile(path, 'utf8').catch(() => null);
+    if (raw === null) continue; // todavía no existe: se marca después del primer arranque
+    const patched = withOnboardingDone(raw, version);
+    if (patched === null) continue;
+    await writeFile(path, patched, 'utf8');
+    cambio = true;
+  }
+  return cambio;
 }
 
 /** Deja todas las cuentas presentadas de una.

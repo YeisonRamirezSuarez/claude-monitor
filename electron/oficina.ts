@@ -27,6 +27,7 @@ import type {
   Profile,
   SubagenteOficina
 } from '../shared/types';
+import { sesionesDeDesktop, type SesionDeDesktop } from './desktop';
 import { lateTodavia, parseSesionViva, type SesionViva } from './liveness';
 
 const run = promisify(execFile);
@@ -477,18 +478,28 @@ export function mismoInicio(procStart: string | undefined, real: string | undefi
 }
 
 const INICIOS_TTL_MS = 15_000;
-let iniciosCache: { en: number; pids: string; mapa: Map<number, string> } | null = null;
+type CacheInicios = { en: number; pids: string; mapa: Map<number, string> };
+let iniciosCache: CacheInicios | null = null;
+
+/** El mapa cacheado si sirve, o null. `sinCache` lo saltea: quien va a matar un pid no puede fiarse de un inicio de hace 15 s. */
+export function iniciosEnCache(cache: CacheInicios | null, clave: string, ahoraMs: number, sinCache: boolean): Map<number, string> | null {
+  if (sinCache || !cache || cache.pids !== clave || ahoraMs - cache.en >= INICIOS_TTL_MS) return null;
+  return cache.mapa;
+}
 
 /**
  * Cuándo arrancó cada pid, como FILETIME. Una sola consulta CIM por lote y
  * cacheada: lanzar PowerShell cuesta medio segundo y la oficina pregunta cada
  * 1,5 s. Nunca lanza: sin respuesta, la sesión que no late no se muestra.
+ * Con `sinCache` no lee el caché (sí lo actualiza): la oficina consulta la misma
+ * clave cada 1,5 s y un pid reciclado dentro del TTL pasaría por el viejo.
  * ponytail: PowerShell por lote cada 15 s; pasar a una llamada nativa si pesa.
  */
-async function iniciosDeProceso(pids: number[], ahoraMs: number): Promise<Map<number, string>> {
+export async function iniciosDeProceso(pids: number[], ahoraMs: number, sinCache = false): Promise<Map<number, string>> {
   if (pids.length === 0 || process.platform !== 'win32') return new Map();
   const clave = [...new Set(pids)].sort((a, b) => a - b).join(',');
-  if (iniciosCache && iniciosCache.pids === clave && ahoraMs - iniciosCache.en < INICIOS_TTL_MS) return iniciosCache.mapa;
+  const cacheado = iniciosEnCache(iniciosCache, clave, ahoraMs, sinCache);
+  if (cacheado) return cacheado;
   const filtro = clave
     .split(',')
     .map((p) => `ProcessId=${Number(p)}`)
@@ -515,12 +526,46 @@ async function iniciosDeProceso(pids: number[], ahoraMs: number): Promise<Map<nu
   return mapa;
 }
 
+/** `desktopDir` sanea el id para nombrar la carpeta: se compara saneado de los dos lados. */
+const mismoId = (a: string, b: string) => a.replace(/[^A-Za-z0-9-]/g, '') === b.replace(/[^A-Za-z0-9-]/g, '');
+
+/** El motor headless de Desktop nunca escribe `status` en el registro; sin él,
+ *  `estadoDe` daba 'pensando' para siempre. Se deduce del transcript: callado
+ *  15 s o más es que Claude terminó su turno (idle), si no sigue en lo suyo. */
+const QUIETO_MS = 15_000;
+/** Con una herramienta pendiente, callado no es lo mismo que esperando: un build
+ *  o un test largo pasa minutos sin escribir el transcript, y como `idle` + herramienta
+ *  pendiente se lee como pedido de permiso, se daría una alarma falsa. Ahí se espera
+ *  bastante más antes de darla por quieta. */
+const QUIETO_CON_HERRAMIENTA_MS = 3 * 60_000;
+export function statusEfectivo(
+  status: string | undefined,
+  mtimeMs: number | null,
+  ahoraMs: number,
+  herramientaPendiente = false
+): string | undefined {
+  if (status !== undefined || mtimeMs === null) return status;
+  return ahoraMs - mtimeMs >= (herramientaPendiente ? QUIETO_CON_HERRAMIENTA_MS : QUIETO_MS) ? 'idle' : 'busy';
+}
+
+/** Una sesión de Desktop pausada (sin motor) sólo se muestra si se tocó en la
+ *  última semana: el almacén guarda sesiones de hace meses que sólo harían
+ *  ruido, y una semana cubre el fin de semana largo sin dejar el cementerio. */
+const PAUSADA_MAX_MS = 7 * 86_400_000;
+export const transcriptReciente = (mtimeMs: number, ahoraMs: number) => ahoraMs - mtimeMs < PAUSADA_MAX_MS;
+
 /**
  * Los agentes que están trabajando ahora en todas las cuentas.
  *
  * Una cuenta de WSL se saltea: su `sessions/` vive adentro de la distro y
  * leerlo obliga a encenderla, que es justo lo que el panel no hace solo.
  * ponytail: sólo Windows; sumar WSL leyendo por `\\wsl.localhost` si se pide.
+ *
+ * Desktop registra sus motores en el `sessions/` del pozo, o sea que ahí todos
+ * parecen de la cuenta dueña del pozo: la cuenta real sale del almacén propio
+ * de cada Desktop (`sesionesDeDesktop`). Y Desktop pausa el motor a los 15 min
+ * sin uso —el proceso y su `<pid>.json` desaparecen— pero la conversación
+ * sigue abierta en su ventana: esas se listan igual, esperando.
  */
 export async function agentesVivos(profiles: Profile[], ahoraMs = Date.now()): Promise<AgenteOficina[]> {
   type Candidata = { p: Profile; viva: SesionViva; crudo: { status?: string; name?: string; procStart?: string } };
@@ -543,6 +588,35 @@ export async function agentesVivos(profiles: Profile[], ahoraMs = Date.now()): P
   // pid se reciclan (ver `procesoVivo` en `liveness.ts`).
   const dudosas = candidatas.filter((c) => !lateTodavia(c.viva, ahoraMs) && c.crudo.procStart);
   const inicios = await iniciosDeProceso(dudosas.map((c) => c.viva.pid), ahoraMs);
+  const deDesktop = await sesionesDeDesktop().catch(() => new Map<string, SesionDeDesktop>());
+
+  const armar = async (
+    p: Profile,
+    ruta: string | null,
+    d: { sessionId: string; nombre: string; cwd: string; origen: 'terminal' | 'desktop'; status?: string }
+  ): Promise<AgenteOficina> => {
+    const lineas = ruta ? await cola(ruta).catch(() => [] as string[]) : [];
+    const act = actividadDe(lineas);
+    const mtime = ruta ? ((await stat(ruta).catch(() => null))?.mtimeMs ?? null) : null;
+    return {
+      sessionId: d.sessionId,
+      profileId: p.id,
+      profileName: p.name,
+      nombre: d.nombre,
+      nombrePropio: '',
+      nota: '',
+      cwd: d.cwd,
+      origen: d.origen,
+      transcript: ruta ?? '',
+      // Sólo el motor de Desktop viene sin status; una terminal sin él (recién
+      // arrancada) sigue como antes.
+      estado: estadoDe(d.origen === 'desktop' ? statusEfectivo(d.status, mtime, ahoraMs, act.tipo !== 'listo' && act.tipo !== 'pensando') : d.status, act),
+      herramienta: act.herramienta,
+      detalle: act.detalle,
+      subagentes: ruta ? await leerSubagentes(ruta, ahoraMs) : [],
+      mensajes: mensajesRecientes(lineas, ahoraMs)
+    };
+  };
 
   const out: AgenteOficina[] = [];
   const vistos = new Set<string>();
@@ -550,27 +624,40 @@ export async function agentesVivos(profiles: Profile[], ahoraMs = Date.now()): P
     const confirmada = lateTodavia(viva, ahoraMs) || mismoInicio(crudo.procStart, inicios.get(viva.pid));
     if (!confirmada || vistos.has(viva.sessionId) || !viva.cwd) continue;
     vistos.add(viva.sessionId);
-    {
-      const ruta = await rutaViva(p.configDir, viva.cwd, viva.sessionId);
-      const lineas = ruta ? await cola(ruta).catch(() => [] as string[]) : [];
-      const act = actividadDe(lineas);
-      out.push({
+    const desktop = viva.entrypoint === 'claude-desktop';
+    const tienda = desktop ? deDesktop.get(viva.sessionId) : undefined;
+    const dueno = (tienda && profiles.find((x) => mismoId(x.id, tienda.profileId) && x.entorno?.tipo !== 'wsl')) || p;
+    const ruta = await rutaViva(p.configDir, viva.cwd, viva.sessionId);
+    out.push(
+      await armar(dueno, ruta, {
         sessionId: viva.sessionId,
-        profileId: p.id,
-        profileName: p.name,
-        nombre: crudo.name || basename(viva.cwd),
-        nombrePropio: '',
-        nota: '',
+        nombre: crudo.name || tienda?.title || basename(viva.cwd),
         cwd: viva.cwd,
-        origen: viva.entrypoint === 'claude-desktop' ? 'desktop' : 'terminal',
-        transcript: ruta ?? '',
-        estado: estadoDe(crudo.status, act),
-        herramienta: act.herramienta,
-        detalle: act.detalle,
-        subagentes: ruta ? await leerSubagentes(ruta, ahoraMs) : [],
-        mensajes: mensajesRecientes(lineas, ahoraMs)
-      });
-    }
+        origen: desktop ? 'desktop' : 'terminal',
+        status: crudo.status
+      })
+    );
+  }
+
+  // Las de Desktop abiertas pero sin motor (pausadas). El transcript vive en el
+  // pozo (o, por el junction, en el de cualquier cuenta).
+  const pozo = profiles.find((x) => x.isDefault) ?? profiles[0];
+  for (const [sessionId, t] of deDesktop) {
+    if (vistos.has(sessionId) || t.archivada || !t.cwd) continue;
+    const dueno = profiles.find((x) => mismoId(x.id, t.profileId) && x.entorno?.tipo !== 'wsl');
+    if (!dueno || !pozo) continue;
+    const ruta = (await rutaViva(pozo.configDir, t.cwd, sessionId)) ?? (await rutaViva(dueno.configDir, t.cwd, sessionId));
+    const info = ruta ? await stat(ruta).catch(() => null) : null;
+    if (!ruta || !info || !transcriptReciente(info.mtimeMs, ahoraMs)) continue;
+    vistos.add(sessionId);
+    out.push({
+      ...(await armar(dueno, ruta, { sessionId, nombre: t.title || basename(t.cwd), cwd: t.cwd, origen: 'desktop', status: 'idle' })),
+      // Sin motor no está trabajando, pase lo que pase con el final del
+      // transcript (una herramienta que quedó pendiente al pausarse no corre).
+      estado: 'esperando',
+      herramienta: '',
+      detalle: ''
+    });
   }
   return out;
 }

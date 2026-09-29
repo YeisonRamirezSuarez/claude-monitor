@@ -33,6 +33,7 @@ import { dondeEstaAbierta, quienLaTiene } from './liveness';
 import { agentesVivos, conversacionDe, equipoDe } from './oficina';
 import { leerNombres, nombrar, type Nombre } from './nombres';
 import { detenerOficina, urlOficina } from './pixel-agents';
+import { detenerRemoto, exigirSinTurno, iniciarRemoto, registrarIpcRemoto, soltarTomada } from './remoto';
 import { readTranscript } from './transcript';
 import { readUsage } from './usage';
 import {
@@ -308,6 +309,52 @@ async function carpetaDeTrabajo(cwd?: string, desde?: string, distro?: string): 
  *  WSL no: la extensión corre en el Chrome de Windows y no llega a la distro. */
 const claudeCon = (p: Profile) => (p.entorno?.tipo === 'wsl' ? 'claude' : 'claude --chrome');
 
+/** Reanudar una sesión en una terminal nueva: lo usan la lista y el botón
+ *  Reabrir del puente de Telegram (`remoto.ts`). */
+const reanudarSesion = async (id: string) => {
+  exigirSinTurno(id);
+  const { session } = await findSession(id);
+  const { profiles, activeProfileId } = await allProfiles();
+  const target = cuentaParaSesion(session, profiles, activeProfileId);
+  if (!target) {
+    // Los dos casos son `null` pero tienen causas opuestas, y confundirlos
+    // manda al usuario a hacer justo lo contrario de lo que necesita: en uno
+    // falta dar de alta una cuenta de WSL, en el otro sobra la que está
+    // activa. Ver `cuentaParaSesion`.
+    const activa = profiles.find((p) => p.id === activeProfileId);
+    throw new Error(
+      session.entorno.tipo === 'wsl'
+        ? `No hay ninguna cuenta dada de alta para la distro "${session.entorno.distro}": sin ella no se puede reanudar esta sesión sin arriesgarse a abrirla con la cuenta equivocada. Agregala con "Agregar cuenta de WSL" y volvé a intentar.`
+        : activa?.entorno?.tipo === 'wsl'
+          ? `La cuenta activa "${activa.name}" vive adentro de la distro "${activa.entorno.distro}" y esta sesión es de Windows: abrirla con esa cuenta arrancaría "claude" en el ~/.claude de la distro, que no contiene este transcript — la sesión no aparecería y nadie te diría por qué. Elegí arriba una cuenta de Windows y volvé a intentar.`
+          : 'No hay ninguna cuenta activa con la que reanudar esta sesión.'
+    );
+  }
+  // El propio `claude` se niega a reanudar una sesión que otra terminal
+  // tiene abierta, pero sólo si la ve: mira el `sessions/` de SU
+  // CLAUDE_CONFIG_DIR, y Desktop —o una terminal de otra cuenta— anota en
+  // otro. Sin esto, la terminal arrancaba encima y los dos escribían el
+  // mismo transcript.
+  await exigirLibre(
+    session,
+    profiles,
+    'Abrirla en otra terminal haría que los dos escriban el mismo transcript y se pisen: el "claude" de acá no ve al otro porque cada cuenta anota sus sesiones vivas en su propia carpeta.'
+  );
+  await requireLogin(target);
+  await openTerminalAs(session.cwd, `${claudeCon(target)} --resume ${session.id}`, target);
+  // Vuelve a una terminal: si el puente de Telegram la tenía tomada, ya no es suya.
+  soltarTomada(session.id);
+  // El aviso de cambio de cuenta por falta de cupo sólo tiene sentido en
+  // Windows: ahí hay más de una cuenta candidata y cuál usar es decisión del
+  // usuario. Una sesión de WSL tiene una única cuenta posible —la de su
+  // distro—, así que no hay entre qué elegir ni cupo de otra que ofrecer.
+  const relevo = session.entorno.tipo === 'wsl' ? null : (await profileForWork()).relevo;
+  return {
+    compactions: await countCompactions(rutaDe(session)),
+    relevo
+  };
+};
+
 function registerHandlers() {
   // La lista se refresca sola cada vez que la ventana toma el foco, así que es
   // también el momento en que la app se entera de que el usuario ya terminó lo
@@ -506,6 +553,8 @@ function registerHandlers() {
     // Negarse no es opcional y no es nuestro: dos procesos escribiendo el
     // mismo `.jsonl` lo rompen. Lo que sí es nuestro es DECIRLO, y decir dónde
     // cerrarla. Ver `liveness.ts`.
+    // Un turno de Telegram (`claude -p`) es otro proceso escribiéndolo, y `exigirLibre` puede no verlo.
+    exigirSinTurno(session.id);
     const { profiles } = await allProfiles();
     await exigirLibre(
       session,
@@ -514,7 +563,10 @@ function registerHandlers() {
     );
 
     const { profile, relevo } = await profileForWork();
-    return { ...(await openDesktopForProfile(profile, session.raiz, resumeLink(session.id))), relevo };
+    const abierta = await openDesktopForProfile(profile, session.raiz, resumeLink(session.id));
+    // Igual que en la terminal: en Desktop ya no la maneja el puente de Telegram.
+    soltarTomada(session.id);
+    return { ...abierta, relevo };
   });
 
   // El protocolo `claude://`, que es lo que decide si Desktop hace el login de
@@ -557,46 +609,7 @@ function registerHandlers() {
   // transcript); la de la distro si es de WSL, porque ahí la activa puede ser
   // cualquier otra y el transcript sólo lo ve la cuenta de esa distro. Ver
   // `cuentaParaSesion`.
-  handle('sessions:resume', async (id: string) => {
-    const { session } = await findSession(id);
-    const { profiles, activeProfileId } = await allProfiles();
-    const target = cuentaParaSesion(session, profiles, activeProfileId);
-    if (!target) {
-      // Los dos casos son `null` pero tienen causas opuestas, y confundirlos
-      // manda al usuario a hacer justo lo contrario de lo que necesita: en uno
-      // falta dar de alta una cuenta de WSL, en el otro sobra la que está
-      // activa. Ver `cuentaParaSesion`.
-      const activa = profiles.find((p) => p.id === activeProfileId);
-      throw new Error(
-        session.entorno.tipo === 'wsl'
-          ? `No hay ninguna cuenta dada de alta para la distro "${session.entorno.distro}": sin ella no se puede reanudar esta sesión sin arriesgarse a abrirla con la cuenta equivocada. Agregala con "Agregar cuenta de WSL" y volvé a intentar.`
-          : activa?.entorno?.tipo === 'wsl'
-            ? `La cuenta activa "${activa.name}" vive adentro de la distro "${activa.entorno.distro}" y esta sesión es de Windows: abrirla con esa cuenta arrancaría "claude" en el ~/.claude de la distro, que no contiene este transcript — la sesión no aparecería y nadie te diría por qué. Elegí arriba una cuenta de Windows y volvé a intentar.`
-            : 'No hay ninguna cuenta activa con la que reanudar esta sesión.'
-      );
-    }
-    // El propio `claude` se niega a reanudar una sesión que otra terminal
-    // tiene abierta, pero sólo si la ve: mira el `sessions/` de SU
-    // CLAUDE_CONFIG_DIR, y Desktop —o una terminal de otra cuenta— anota en
-    // otro. Sin esto, la terminal arrancaba encima y los dos escribían el
-    // mismo transcript.
-    await exigirLibre(
-      session,
-      profiles,
-      'Abrirla en otra terminal haría que los dos escriban el mismo transcript y se pisen: el "claude" de acá no ve al otro porque cada cuenta anota sus sesiones vivas en su propia carpeta.'
-    );
-    await requireLogin(target);
-    await openTerminalAs(session.cwd, `${claudeCon(target)} --resume ${session.id}`, target);
-    // El aviso de cambio de cuenta por falta de cupo sólo tiene sentido en
-    // Windows: ahí hay más de una cuenta candidata y cuál usar es decisión del
-    // usuario. Una sesión de WSL tiene una única cuenta posible —la de su
-    // distro—, así que no hay entre qué elegir ni cupo de otra que ofrecer.
-    const relevo = session.entorno.tipo === 'wsl' ? null : (await profileForWork()).relevo;
-    return {
-      compactions: await countCompactions(rutaDe(session)),
-      relevo
-    };
-  });
+  handle('sessions:resume', reanudarSesion);
   // Una cuenta recién creada apunta a un CLAUDE_CONFIG_DIR vacío: no tiene
   // sesiones ni proyectos, y sin esto no habría forma de crear la primera
   // desde la app. Abre `claude` (sin --resume) en la carpeta elegida.
@@ -713,6 +726,8 @@ function registerHandlers() {
   handle('profiles:createWsl', (name: string, distro: string) => createWslProfile(name, distro));
   // Sólo acá se enciende una distro, y sólo porque el usuario apretó el botón.
   handle('wsl:encender', (distro: string) => encenderDistro(distro));
+  // El puente de Telegram (spec 2026-09-28-telegram-remoto-design.md).
+  registrarIpcRemoto(handle, async (sessionId) => void (await reanudarSesion(sessionId)));
 }
 
 /** `hash` elige la vista: vacío es el panel, `oficina` la Oficina en vivo. */
@@ -727,6 +742,13 @@ function createWindow(hash = '', opciones: Electron.BrowserWindowConstructorOpti
       contextIsolation: true,
       nodeIntegration: false
     }
+  });
+
+  // La versión en la barra de título: sin eso no había forma de saber, desde la
+  // app, qué versión se está usando (se reparte al equipo y conviven varias).
+  win.on('page-title-updated', (e, titulo) => {
+    e.preventDefault();
+    win.setTitle(`${titulo} · v${app.getVersion()}`);
   });
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -824,6 +846,8 @@ app.whenReady().then(async () => {
   // La oficina arranca con la app: al abrirla ya tiene a los agentes que
   // vio mientras tanto. Se cierra con ella (`will-quit`).
   urlOficina().catch((e) => anotar('pixel-agents: no arrancó', { error: String(e) }));
+  // El puente de Telegram, si el usuario lo activó.
+  iniciarRemoto().catch((e) => anotar('telegram: no arrancó', { error: String(e) }));
   // Windows puede haber lanzado la app PARA entregar un enlace: entonces no
   // llega por `second-instance` sino en la línea de comandos del arranque.
   const url = enlaceEn(process.argv);
@@ -831,6 +855,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('will-quit', detenerOficina);
+app.on('will-quit', () => void detenerRemoto());
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

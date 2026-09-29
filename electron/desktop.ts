@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { readdir, stat } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -81,6 +81,88 @@ export const desktopRoot = () => join(localAppData(), 'claude-monitor', 'desktop
  *  ninguna de las del panel. */
 export function desktopDir(profileId: string): string {
   return join(desktopRoot(), profileId.replace(/[^A-Za-z0-9-]/g, ''));
+}
+
+/** Una sesión de la pestaña Code tal como la anota Desktop en su almacén. */
+export type SesionDeDesktop = {
+  /** El nombre de la carpeta de datos, o sea `desktopDir(id)` de la cuenta. */
+  profileId: string;
+  title: string;
+  cwd: string;
+  archivada: boolean;
+  /** `lastActivityAt` de Desktop (ms). Sólo sirve para desempatar. */
+  actividad: number;
+};
+
+/** Lo ya leído de cada `local_*.json`, con el mtime/tamaño con que se leyó: la
+ *  oficina pregunta cada 1,5 s y no hace falta reparsear lo que no cambió. */
+const almacen = new Map<string, { mtimeMs: number; size: number; sesion: (SesionDeDesktop & { cli: string }) | null }>();
+
+/**
+ * Quién es el dueño de cada sesión de Desktop: `cliSessionId -> cuenta`.
+ *
+ * Existe porque el registro de sesiones vivas (`<CLAUDE_CONFIG_DIR>/sessions`)
+ * NO lo dice: Desktop lanza su motor con `CLAUDE_CONFIG_DIR` apuntando al pozo
+ * (ver el comentario de arriba), así que TODA sesión de Desktop se anota en
+ * `~/.claude/sessions` sea de la cuenta que sea. La cuenta real es la que tiene
+ * la sesión en su propio almacén,
+ * `<desktopDir>/claude-code-sessions/<cuenta>/<org>/local_*.json`, donde
+ * `cliSessionId` es el mismo id que usa el registro (medido en esta máquina;
+ * `isArchived`, `title` y `cwd` también están ahí).
+ *
+ * El mismo `cliSessionId` puede figurar en varios almacenes: el pozo es
+ * compartido y cada Desktop que adoptó la conversación la anotó (67 archivos
+ * medidos, 48 ids distintos). Manda la que no está archivada y, entre esas, la de
+ * actividad más reciente: es donde se la usó por última vez.
+ *
+ * Nunca lanza: un almacén ilegible es una cuenta que no se puede atribuir, y
+ * quien llama sigue con lo que tenía.
+ */
+export async function sesionesDeDesktop(raiz = desktopRoot()): Promise<Map<string, SesionDeDesktop>> {
+  const mejores = new Map<string, SesionDeDesktop>();
+  const vistos = new Set<string>();
+  for (const perfil of await readdir(raiz).catch(() => [] as string[])) {
+    const base = join(raiz, perfil, 'claude-code-sessions');
+    // <cuenta>/<org>/local_*.json: dos niveles de ids, sin nada más que importe.
+    for (const rel of await readdir(base, { recursive: true }).catch(() => [] as string[])) {
+      if (!/^[^\\/]+[\\/][^\\/]+[\\/]local_[^\\/]+\.json$/.test(rel)) continue;
+      const ruta = join(base, rel);
+      vistos.add(ruta);
+      const info = await stat(ruta).catch(() => null);
+      if (!info) continue;
+      let hecho = almacen.get(ruta);
+      if (!hecho || hecho.mtimeMs !== info.mtimeMs || hecho.size !== info.size) {
+        const texto = await readFile(ruta, 'utf8').catch(() => '');
+        hecho = { mtimeMs: info.mtimeMs, size: info.size, sesion: leerSesion(texto, perfil) };
+        almacen.set(ruta, hecho);
+      }
+      const s = hecho.sesion;
+      if (!s) continue;
+      const otra = mejores.get(s.cli);
+      if (!otra || (otra.archivada && !s.archivada) || (otra.archivada === s.archivada && s.actividad > otra.actividad)) {
+        mejores.set(s.cli, s);
+      }
+    }
+  }
+  for (const ruta of almacen.keys()) if (ruta.startsWith(raiz) && !vistos.has(ruta)) almacen.delete(ruta);
+  return mejores;
+}
+
+function leerSesion(texto: string, profileId: string): (SesionDeDesktop & { cli: string }) | null {
+  try {
+    const j = JSON.parse(texto) as Record<string, unknown>;
+    if (typeof j.cliSessionId !== 'string' || !j.cliSessionId) return null;
+    return {
+      cli: j.cliSessionId,
+      profileId,
+      title: typeof j.title === 'string' ? j.title : '',
+      cwd: typeof j.cwd === 'string' ? j.cwd : '',
+      archivada: j.isArchived === true,
+      actividad: typeof j.lastActivityAt === 'number' ? j.lastActivityAt : 0
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** Squirrel deja una carpeta por versión (`app-1.2.3`) y no borra las viejas,

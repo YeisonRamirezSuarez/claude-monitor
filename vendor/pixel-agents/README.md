@@ -19,9 +19,9 @@ Qué agrega el parche:
 - **Edificio** (`edificio-layout.json`, generado por `scripts/claude-monitor-layout.mjs`): una sola
   oficina con salas — Despacho, Trabajo, Biblioteca (pensar), Descanso (sofás: esperar / sin
   actividad), Reuniones (los que se hablan van a sentarse a la mesa) — y la puerta al pie del
-  pasillo. Viene como plano por defecto (`assets/default-layout-2.json`, revisión 2): una
+  pasillo. Viene como plano por defecto (`assets/default-layout-3.json`, revisión 3): una
   instalación nueva lo recibe, y un `~/.pixel-agents/layout.json` que sigue en la oficina original
-  (revisión 1) se reemplaza solo. Los subagentes se sientan en el escritorio libre más cercano a su
+  (revisión 1 o 2) se reemplaza solo. Los subagentes se sientan en el escritorio libre más cercano a su
   principal.
 - **Muebles de Kenney** (`KN_*`, ver `KENNEY-LICENSE.txt`): mesas de reunión, sillas, sillones, cocina,
   piano, lámparas y plantas de "Roguelike Indoors" de Kenney (www.kenney.nl), **CC0 1.0**. Se
@@ -41,6 +41,9 @@ Qué agrega el parche:
   sola (se vigila `profiles.json`).
 - **Ciclo de vida:** arranca con la app y se cierra con ella; si la app muere sin cerrarlo, se va
   solo (`PIXEL_AGENTS_PARENT_PID`). Si no, el huérfano seguía y el próximo arranque lo reusaba.
+- **Equipamiento:** TV de pared, mueble con TV, pantalla de proyección y proyector (dibujados por el script, Kenney no los tiene) más sillas, sillón, candelabro, lámpara, cuadros, mapa, espejo, estante y cajonera de Kenney; ubicados en el edificio (revisión 3).
+- **Borrador:** saca primero los muebles de la baldosa (lo que está encima antes que el escritorio) y recién después el piso; una acción por baldosa en cada clic.
+- **Mascotas:** colores por mascota (gato: negro, naranja, gris, blanco, chocolate, crema; perro: canela, marrón, blanco, negro) y varias por especie: el carrusel agrega, la lista con × saca. `petType` sigue siendo el índice por nombre de carpeta: una especie nueva tiene que ordenar después de las existentes.
 - **Nombres:** las etiquetas usan los nombres de `%APPDATA%\claude-monitor\nombres.json`, y si no hay,
   el nombre de la sesión del registro de Claude Code (no la carpeta).
 - **Build:** el CLI va con fastify adentro (sin `external` en esbuild): el portable de Electron

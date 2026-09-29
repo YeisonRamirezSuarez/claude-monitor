@@ -27,7 +27,14 @@ describe('withOnboardingDone', () => {
   });
 
   it('no reescribe si ya estaba marcada', () => {
-    expect(withOnboardingDone(JSON.stringify({ hasCompletedOnboarding: true }), '2.1.205')).toBeNull();
+    expect(
+      withOnboardingDone(JSON.stringify({ hasCompletedOnboarding: true, claudeInChromeDefaultEnabled: true }), '2.1.205')
+    ).toBeNull();
+  });
+
+  it('prende Chrome por defecto: sin eso la sesión no ve la extensión si no se abrió con --chrome', () => {
+    const salida = JSON.parse(withOnboardingDone(JSON.stringify({ hasCompletedOnboarding: true }), '2.1.205')!);
+    expect(salida.claudeInChromeDefaultEnabled).toBe(true);
   });
 
   it('sin versión conocida igual marca: lo que decide el arranque es el booleano', () => {

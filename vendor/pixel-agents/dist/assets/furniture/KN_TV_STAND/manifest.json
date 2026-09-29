@@ -1,0 +1,14 @@
+{
+  "id": "KN_TV_STAND",
+  "name": "Mueble de TV",
+  "category": "misc",
+  "type": "asset",
+  "file": "KN_TV_STAND.png",
+  "width": 32,
+  "height": 32,
+  "footprintW": 2,
+  "footprintH": 2,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 1
+}

@@ -1,6 +1,6 @@
 {
   "name": "claude-monitor",
-  "version": "0.22.0",
+  "version": "0.24.0",
   "private": true,
   "type": "module",
   "main": "out/main/main.js",
@@ -58,6 +58,14 @@
         "to": "pixel-agents",
         "filter": [
           "**/*"
+        ]
+      },
+      {
+        "from": "electron",
+        "to": "remoto",
+        "filter": [
+          "tapa.ps1",
+          "hooks/remoto-hook.js"
         ]
       }
     ]
