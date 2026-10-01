@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
+  argsCambio,
+  conCierre,
+  leerCambioModelo,
+  USO_MODELO,
   PREFIJO,
   botonesPregunta,
   contextoInicio,
@@ -74,5 +78,68 @@ describe('textos y botones', () => {
   });
   it('nombre del tema: carpeta · sesión · cuenta', () => {
     expect(nombreTema({ cwd: 'C:\\repos\\VendigMachine', nombre: 'migracion', profileName: 'MAX' })).toBe('VendigMachine · migracion · MAX');
+  });
+});
+
+describe('leerCambioModelo', () => {
+  it('lee /model y /effort, juntos o sueltos', () => {
+    expect(leerCambioModelo('/model opus')).toEqual({ model: 'opus' });
+    expect(leerCambioModelo('/effort HIGH')).toEqual({ effort: 'high' });
+    expect(leerCambioModelo('/model@mibot claude-opus-5-5 /effort max')).toEqual({ model: 'claude-opus-5-5', effort: 'max' });
+  });
+  it('otro /comando o texto común no es un cambio', () => {
+    expect(leerCambioModelo('/code-review')).toBeNull();
+    expect(leerCambioModelo('mirá cómo quedó /model en la ayuda')).toBeNull();
+  });
+  it('sin valor o con uno fuera de la lista es un error: nada libre llega a la línea de comandos', () => {
+    expect(leerCambioModelo('/model')).toEqual({ error: USO_MODELO });
+    expect(leerCambioModelo("/model opus';calc")).toEqual({ error: USO_MODELO });
+    expect(leerCambioModelo('/effort turbo')).toEqual({ error: USO_MODELO });
+    expect(leerCambioModelo('/model opus y algo')).toEqual({ error: USO_MODELO });
+  });
+  it('entiende el pedido hablado, corto y con un verbo de cambio', () => {
+    expect(leerCambioModelo('Cámbiate al modelo Opus')).toEqual({ model: 'opus' });
+    expect(leerCambioModelo('ponle esfuerzo alto')).toEqual({ effort: 'high' });
+    expect(leerCambioModelo('pasate a sonnet con esfuerzo máximo')).toEqual({ model: 'sonnet', effort: 'max' });
+    expect(leerCambioModelo('sube el esfuerzo a muy alto')).toEqual({ effort: 'xhigh' });
+  });
+  it('lo que no es un pedido de cambio sigue como mensaje', () => {
+    expect(leerCambioModelo('no cambies a opus')).toBeNull();
+    expect(leerCambioModelo('qué modelo sos?')).toBeNull();
+    expect(leerCambioModelo('cambiá el color del botón a alto contraste')).toBeNull();
+    expect(leerCambioModelo('cambiá a opus y después ' + 'x'.repeat(80))).toBeNull();
+  });
+
+  it('/compact y "compactá" reabren compactando; las instrucciones van sin ; ni comillas dobles', () => {
+    expect(leerCambioModelo('/compact')).toEqual({ compactar: '' });
+    expect(leerCambioModelo('/compact@mibot guardá lo de Telegram; "todo"')).toEqual({ compactar: 'guardá lo de Telegram todo' });
+    expect(leerCambioModelo('Compactá la conversación')).toEqual({ compactar: '' });
+    expect(leerCambioModelo('el código quedó compacto')).toBeNull();
+    // Sólo como primera palabra: un comentario con "compacta" adentro no compacta nada.
+    expect(leerCambioModelo('la respuesta quedó compacta')).toBeNull();
+    expect(leerCambioModelo('compact')).toEqual({ compactar: '' });
+    // Dictado por voz, con muletilla adelante.
+    expect(leerCambioModelo('O sea compacta la conversación')).toEqual({ compactar: '' });
+    expect(leerCambioModelo('dale, compactala')).toEqual({ compactar: '' });
+    expect(leerCambioModelo('podés compactar el contexto?')).toEqual({ compactar: '' });
+    expect(argsCambio({ compactar: 'foco en X' })).toEqual(['/compact foco en X']);
+    expect(argsCambio({ compactar: '' })).toEqual(['/compact']);
+  });
+
+  it('argsCambio con mensaje: el texto en una línea, sin ; ni comillas dobles ni un - que parezca opción', () => {
+    expect(argsCambio({ mensaje: 'seguí;\n"con" esto' })).toEqual(['seguí con esto']);
+    expect(argsCambio({ mensaje: '--help me' })).toEqual(['help me']);
+    expect(argsCambio({ mensaje: ' ; ' })).toEqual(['.']);
+  });
+
+  it('argsCambio no lleva ; ni comillas dobles (wt.exe las reparsea)', () => {
+    const a = argsCambio({ model: 'opus', effort: 'high' });
+    expect(a.slice(0, 4)).toEqual(['--model', 'opus', '--effort', 'high']);
+    expect(a.join(' ')).not.toMatch(/[;"]/);
+  });
+  it('conCierre cierra la ventana sólo con la marca, y sin ; ni comillas dobles', () => {
+    const c = conCierre("claude --resume abc 'hola'", 'abc');
+    expect(c).toContain("Test-Path (Join-Path $env:TEMP 'claude-monitor-cerrar-abc')");
+    expect(c.split('\n').slice(1).join(' ')).not.toMatch(/[;"]/);
   });
 });

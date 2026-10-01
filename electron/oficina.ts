@@ -129,8 +129,12 @@ export function detalleHerramienta(nombre: string, input: Record<string, unknown
   }
 }
 
+/** Herramientas que fallan seguidas para que el agente se vea estresado en la oficina. */
+const FALLOS_ESTRES = 3;
+
 /**
- * Qué está haciendo el agente según el final de su transcript.
+ * Qué está haciendo el agente según el final de su transcript. `estresado`:
+ * sus últimas herramientas fallaron seguidas, o lo último fue un error de la API.
  *
  * Una herramienta pedida sin resultado es lo que está corriendo. Si no hay
  * ninguna, manda el último turno: si habló el usuario (o volvió un resultado)
@@ -139,24 +143,32 @@ export function detalleHerramienta(nombre: string, input: Record<string, unknown
 export function actividadDe(lineas: Iterable<string>): ActividadAgente {
   const pendientes = new Map<string, { nombre: string; input: Record<string, unknown> }>();
   let ultimo: 'usuario' | 'claude' | null = null;
+  let fallosSeguidos = 0;
+  let errorApi = false;
 
   for (const e of parsear(lineas)) {
     if (e.type !== 'user' && e.type !== 'assistant') continue;
     const partes = bloques((e.message as { content?: unknown } | undefined)?.content);
     for (const b of partes) {
       if (b.type === 'tool_use' && b.id) pendientes.set(b.id, { nombre: b.name ?? '', input: b.input ?? {} });
-      if (b.type === 'tool_result' && b.tool_use_id) pendientes.delete(b.tool_use_id);
+      if (b.type === 'tool_result' && b.tool_use_id) {
+        pendientes.delete(b.tool_use_id);
+        fallosSeguidos = b.is_error === true ? fallosSeguidos + 1 : 0;
+      }
     }
     if (e.type === 'assistant') ultimo = 'claude';
     else if (e.isMeta !== true) ultimo = 'usuario';
+    // Lo último que pasó fue un error de la API (límite, sobrecarga): hasta que vuelva a andar.
+    errorApi = e.type === 'assistant' && e.isApiErrorMessage === true;
   }
+  const estresado = fallosSeguidos >= FALLOS_ESTRES || errorApi;
 
   const enCurso = [...pendientes.values()].pop();
   if (enCurso) {
     const tipo = DELEGA.has(enCurso.nombre) ? 'delegando' : LECTURA.has(enCurso.nombre) ? 'leyendo' : 'escribiendo';
-    return { tipo, herramienta: enCurso.nombre, detalle: detalleHerramienta(enCurso.nombre, enCurso.input) };
+    return { tipo, herramienta: enCurso.nombre, detalle: detalleHerramienta(enCurso.nombre, enCurso.input), estresado };
   }
-  return { tipo: ultimo === 'usuario' ? 'pensando' : 'listo', herramienta: '', detalle: '' };
+  return { tipo: ultimo === 'usuario' ? 'pensando' : 'listo', herramienta: '', detalle: '', estresado };
 }
 
 /**
@@ -454,6 +466,7 @@ async function leerSubagentes(rutaSesion: string, ahoraMs: number, todos = false
       estado: termino ? 'terminado' : act.tipo === 'listo' ? 'pensando' : act.tipo,
       herramienta: termino ? '' : act.herramienta,
       detalle: termino ? '' : act.detalle,
+      estresado: !termino && act.estresado === true,
       ultimaActividad: mtime
     });
   }
@@ -613,6 +626,7 @@ export async function agentesVivos(profiles: Profile[], ahoraMs = Date.now()): P
       estado: estadoDe(d.origen === 'desktop' ? statusEfectivo(d.status, mtime, ahoraMs, act.tipo !== 'listo' && act.tipo !== 'pensando') : d.status, act),
       herramienta: act.herramienta,
       detalle: act.detalle,
+      estresado: act.estresado === true,
       subagentes: ruta ? await leerSubagentes(ruta, ahoraMs) : [],
       mensajes: mensajesRecientes(lineas, ahoraMs)
     };
@@ -650,6 +664,13 @@ export async function agentesVivos(profiles: Profile[], ahoraMs = Date.now()): P
     const info = ruta ? await stat(ruta).catch(() => null) : null;
     if (!ruta || !info || !transcriptReciente(info.mtimeMs, ahoraMs)) continue;
     vistos.add(sessionId);
+    // Escrito hace poco: el motor anda aunque su registro no esté donde se lo
+    // busca (Desktop que anota en otro `sessions/`). Uno pausado no escribe.
+    // Sin esto se la daba por pausada y en la oficina descansaba trabajando.
+    if (ahoraMs - info.mtimeMs < QUIETO_CON_HERRAMIENTA_MS) {
+      out.push(await armar(dueno, ruta, { sessionId, nombre: t.title || basename(t.cwd), cwd: t.cwd, origen: 'desktop' }));
+      continue;
+    }
     out.push({
       ...(await armar(dueno, ruta, { sessionId, nombre: t.title || basename(t.cwd), cwd: t.cwd, origen: 'desktop', status: 'idle' })),
       // Sin motor no está trabajando, pase lo que pase con el final del

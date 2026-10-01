@@ -91,6 +91,34 @@ describe('Telegram', () => {
     await expect(p).rejects.toMatchObject({ codigo: 401 });
   });
 
+  it('escuchar corta al tercer 409 seguido (otro programa lee el mismo bot)', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = vi.fn(async () => respuesta(null, false, 409));
+      const tg = new Telegram('T', f as unknown as typeof fetch);
+      const ctrl = new AbortController();
+      const p = tg.escuchar(0, async () => {}, () => {}, ctrl.signal);
+      const fallo = expect(p).rejects.toMatchObject({ codigo: 409 });
+      // 1.º → espera 1 s, 2.º → 2 s, 3.º → corta.
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(2000);
+      await fallo;
+      expect(f).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('getUpdates lleva un tope propio de espera (la red muerta no lo deja colgado)', async () => {
+    const f = vi.fn(async (_u: string, init: RequestInit) => {
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      return respuesta([]);
+    });
+    const tg = new Telegram('T', f as unknown as typeof fetch);
+    await tg.actualizaciones(0, 50);
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
   it('escuchar espera 1000 ms antes de reintentar en error de red', async () => {
     vi.useFakeTimers();
     try {

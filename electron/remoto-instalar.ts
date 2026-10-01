@@ -16,7 +16,9 @@ export const EVENTOS: Array<[string, string]> = [
   ['PreToolUse', 'AskUserQuestion'],
   ['Stop', '*'],
   ['PostToolUse', '*'],
-  ['SessionStart', '*']
+  ['SessionStart', '*'],
+  ['PreCompact', '*'],
+  ['PostCompact', '*']
 ];
 
 type Entrada = { matcher?: string; hooks?: Array<{ type?: string; command?: string; timeout?: number }> };

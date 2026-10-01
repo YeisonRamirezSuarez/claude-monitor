@@ -18,11 +18,32 @@ Qué agrega el parche:
   ventana; `GET /api/claude-monitor/agents` dice qué sesión es cada personaje.
 - **Edificio** (`edificio-layout.json`, generado por `scripts/claude-monitor-layout.mjs`): una sola
   oficina con salas — Despacho, Trabajo, Biblioteca (pensar), Descanso (sofás: esperar / sin
-  actividad), Reuniones (los que se hablan van a sentarse a la mesa) — y la puerta al pie del
-  pasillo. Viene como plano por defecto (`assets/default-layout-3.json`, revisión 3): una
-  instalación nueva lo recibe, y un `~/.pixel-agents/layout.json` que sigue en la oficina original
-  (revisión 1 o 2) se reemplaza solo. Los subagentes se sientan en el escritorio libre más cercano a su
-  principal.
+  actividad), Reuniones (los que se hablan van a sentarse a la mesa), Baños (ala al lado de
+  Trabajo: inodoros con mampara, lavamanos con espejo, ducha, bañera) — y la puerta al pie del
+  pasillo. Viene como plano por defecto (`assets/default-layout-4.json`, revisión 4): una
+  instalación nueva lo recibe, y un `~/.pixel-agents/layout.json` de una revisión anterior se
+  reemplaza solo al conectarse la oficina, conservando sus mascotas; el viejo queda al lado como
+  `layout.rev<N>.json`. Los subagentes se sientan en el escritorio libre más cercano a su principal.
+- **Vida en la oficina:** en el descanso, la mitad de las veces van a hacer algo (nevera, piano,
+  dispensador de agua, cocina, tetera) con las manos ocupadas, y cada 30 s cambian de actividad; el
+  televisor de la sala se prende mientras alguien descansa ahí (el de pared, también mientras
+  trabajan), y la pantalla de Reuniones mientras hay reunión.
+- **Estrés:** claude-monitor manda `estresado` cuando un agente falla 3 herramientas seguidas o lo
+  último fue un error de la API; va a los Baños y se agarra la cabeza bajo una nube de tormenta, con
+  "😫 Estresado" en su etiqueta, hasta que una herramienta le sale bien. La pose se dibuja sobre el
+  cuadro de frente (`stressFrame` en `characters.ts`): las hojas de personajes no la traen.
+- **Personalizar** (🎨 en la etiqueta del agente seleccionado; `sprites/looks.ts` y
+  `components/CustomizerModal.tsx`): cuerpo (uno de los 6 de base), piel, peinado (original, corto,
+  largo, moño, coleta, cresta, afro, calvo) y su color, ropa (original, vestido, buzo con capucha,
+  traje) y sus colores, sombrero (gorra, gorro, sombrero, copa), gafas (redondas, cuadradas, de sol),
+  barba (bigote, corta, completa) y contextura (normal, alto, bajito, grueso), con vista previa en
+  las tres direcciones. El cuerpo y las poses salen de la hoja de base; la cabeza se arma de nuevo
+  con máscaras (cráneo, cara, pelo, accesorios) sobre la fila del cuello, que es la misma en las 6
+  hojas; los colores se cambian por rol (piel, pelo, arriba, abajo, zapatos) leyendo dónde aparece
+  cada color en el cuadro de frente. claude-monitor la guarda (`apariencias.json`) por sesión o por
+  cuenta y se la manda a la oficina (`claude-monitor:looks`).
+- **Emociones:** al hablar, cada uno muestra a ratos en su globo un corazón, una idea, "!", "?" o una
+  risa, con un saltito; el informe final del subagente, siempre alegre.
 - **Muebles de Kenney** (`KN_*`, ver `KENNEY-LICENSE.txt`): mesas de reunión, sillas, sillones, cocina,
   piano, lámparas y plantas de "Roguelike Indoors" de Kenney (www.kenney.nl), **CC0 1.0**. Se
   importan con `scripts/claude-monitor-kenney.cjs <roguelikeIndoor_transparent.png>`. Las
@@ -41,9 +62,9 @@ Qué agrega el parche:
   sola (se vigila `profiles.json`).
 - **Ciclo de vida:** arranca con la app y se cierra con ella; si la app muere sin cerrarlo, se va
   solo (`PIXEL_AGENTS_PARENT_PID`). Si no, el huérfano seguía y el próximo arranque lo reusaba.
-- **Equipamiento:** TV de pared, mueble con TV, pantalla de proyección y proyector (dibujados por el script, Kenney no los tiene) más sillas, sillón, candelabro, lámpara, cuadros, mapa, espejo, estante y cajonera de Kenney; ubicados en el edificio (revisión 3).
+- **Equipamiento:** TV de pared, mueble con TV, pantalla de proyección y proyector (dibujados por el script, Kenney no los tiene) más sillas, sillón, candelabro, lámpara, cuadros, mapa, espejo, estante y cajonera de Kenney; ubicados en el edificio. Categorías nuevas **Cocina** (mesadas con tetera, frascos, botellas, platos y tabla, vitrina de Kenney; microondas, tostadora, cafetera, licuadora, lavadora y dispensador de agua dibujados) y **Baño** (inodoro, lavamanos, ducha, mampara, bañera, toallero dibujados); en Tech, ventilador e impresora, y en Pared, aire acondicionado y cuadritos.
 - **Borrador:** saca primero los muebles de la baldosa (lo que está encima antes que el escritorio) y recién después el piso; una acción por baldosa en cada clic.
-- **Mascotas:** colores por mascota (gato: negro, naranja, gris, blanco, chocolate, crema; perro: canela, marrón, blanco, negro) y varias por especie: el carrusel agrega, la lista con × saca. `petType` sigue siendo el índice por nombre de carpeta: una especie nueva tiene que ordenar después de las existentes.
+- **Mascotas:** colores por mascota (gato: negro, naranja, gris, blanco, chocolate, crema; perro: canela, marrón, blanco, negro) y varias por especie: el carrusel agrega, la lista con × saca. `petType` sigue siendo el índice por nombre de carpeta: una especie nueva tiene que ordenar después de las existentes. Especies nuevas, dibujadas por `scripts/claude-monitor-pets.cjs` en carpetas `km-*` (ordenan detrás de claudio y gitcat): conejo, pato, cerdito y tortuga.
 - **Nombres:** las etiquetas usan los nombres de `%APPDATA%\claude-monitor\nombres.json`, y si no hay,
   el nombre de la sesión del registro de Claude Code (no la carpeta).
 - **Build:** el CLI va con fastify adentro (sin `external` en esbuild): el portable de Electron

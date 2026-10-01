@@ -9,8 +9,9 @@
  * turnos: esperar trabaría el proceso `-p` (ver `hooks/remoto-hook.js`).
  */
 
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { promisify } from 'node:util';
 import { iniciosDeProceso, mismoInicio } from './oficina';
 import { sessionEnv } from './terminal';
 
@@ -47,7 +48,7 @@ export class Tomador {
   constructor(
     private d: {
       registro: (sessionId: string) => Promise<Registro | null>;
-      matar: (pid: number, procStart?: string) => Promise<void>;
+      matar: (pid: number, procStart?: string, configDir?: string) => Promise<void>;
       lanzar: Lanzar;
       alTexto: (sessionId: string, texto: string) => void;
       alError: (sessionId: string, error: string) => void;
@@ -103,7 +104,7 @@ export class Tomador {
       // El chequeo del puente puede haberle ganado de mano a una sesión que
       // justo reanudó: matarla ahí cortaría un turno en curso.
       if (!vivo.quieta) throw new Error('La sesión está trabajando: no la tomo.');
-      await this.d.matar(vivo.pid, vivo.procStart);
+      await this.d.matar(vivo.pid, vivo.procStart, vivo.configDir);
       reg = vivo;
       this.registros.set(sessionId, reg);
     }
@@ -136,15 +137,57 @@ export class Tomador {
  * reciclan en Windows: sin `procStart` no hay forma de confirmarlo, y matar a
  * ciegas puede llevarse un proceso ajeno.
  */
-export async function matarSiEsElMismo(pid: number, procStart?: string): Promise<void> {
+export async function matarSiEsElMismo(
+  pid: number,
+  procStart?: string,
+  configDir?: string,
+  pararDeFondo: (pid: number, configDir?: string) => Promise<boolean> = pararSiEsDeFondo
+): Promise<void> {
   if (!procStart) throw new Error('No puedo confirmar el proceso de esa sesión.');
   // Fresco: el caché de 15 s es de la oficina y puede traer el inicio del dueño anterior del pid.
   const inicios = await iniciosDeProceso([pid], Date.now(), true);
   if (!mismoInicio(procStart, inicios.get(pid))) throw new Error('El proceso de esa sesión ya no es el que era.');
-  process.kill(pid);
+  // Una sesión en segundo plano ("Claude agents") la cuida `claude daemon`: matada, la relanza enseguida y
+  // quedan dos procesos escribiendo el mismo transcript. `claude stop` la para de verdad.
+  if (!(await pararDeFondo(pid, configDir))) process.kill(pid);
+  // Hasta que sale, `exigirLibre` la ve viva y un `--resume` abriría una copia.
+  for (let i = 0; i < 50 && vive(pid); i++) await new Promise((r) => setTimeout(r, 100));
   // Claude Code borra su `sessions/<pid>.json` al cerrar bien; matado no, y ese
   // archivo sigue pareciendo vivo hasta TTL_LATIDO_MS (5 min). Por eso la
   // oficina tiene que ocultar las sesiones tomadas (Tarea 10).
+}
+
+function vive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Mismo motivo que `lanzarClaude` para `shell: true`; los argumentos son fijos o un id ya validado. */
+async function ejecutar(args: string[], configDir?: string): Promise<string> {
+  const env = configDir ? sessionEnv(process.env, configDir) : process.env;
+  const { stdout } = await promisify(execFile)('claude', args, { env, shell: true, windowsHide: true, timeout: 30_000 });
+  return stdout;
+}
+
+/** El id corto (el de `claude stop`) si ese pid es una sesión en segundo plano, según `claude agents --json`. */
+export function idDeFondoEn(json: string, pid: number): string | null {
+  try {
+    const s = (JSON.parse(json) as Array<{ pid?: unknown; id?: unknown; kind?: unknown }>).find((x) => x.pid === pid);
+    return s?.kind === 'background' && typeof s.id === 'string' && /^[0-9a-zA-Z-]{4,40}$/.test(s.id) ? s.id : null;
+  } catch {
+    return null;
+  }
+}
+
+/** true si era de segundo plano y ya la paró. Sin la lista no se sabe: false, y se mata el pid como siempre. */
+async function pararSiEsDeFondo(pid: number, configDir?: string): Promise<boolean> {
+  const id = idDeFondoEn(await ejecutar(['agents', '--json'], configDir).catch(() => '[]'), pid);
+  if (id) await ejecutar(['stop', id], configDir);
+  return id !== null;
 }
 
 /**

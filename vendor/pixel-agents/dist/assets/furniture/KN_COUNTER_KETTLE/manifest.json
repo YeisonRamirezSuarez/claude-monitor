@@ -1,0 +1,14 @@
+{
+  "id": "KN_COUNTER_KETTLE",
+  "name": "Mesada con tetera (Kenney)",
+  "category": "kitchen",
+  "type": "asset",
+  "file": "KN_COUNTER_KETTLE.png",
+  "width": 16,
+  "height": 16,
+  "footprintW": 1,
+  "footprintH": 1,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

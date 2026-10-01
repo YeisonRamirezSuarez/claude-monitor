@@ -161,6 +161,8 @@ export type ActividadAgente = {
   tipo: 'escribiendo' | 'leyendo' | 'delegando' | 'pensando' | 'listo';
   herramienta: string;
   detalle: string;
+  /** Herramientas que fallan seguidas, o un error de la API: la oficina lo lleva al baño. */
+  estresado?: boolean;
 };
 
 /** Lo que se muestra en la oficina. `permiso` es una herramienta pedida con la
@@ -183,6 +185,8 @@ export type SubagenteOficina = {
   estado: Exclude<EstadoAgente, 'permiso' | 'esperando'> | 'terminado';
   herramienta: string;
   detalle: string;
+  /** Ver `ActividadAgente.estresado`. */
+  estresado?: boolean;
 };
 
 /** Una sesión viva, con la cuenta que la está corriendo. */
@@ -198,6 +202,8 @@ export type AgenteOficina = {
   estado: EstadoAgente;
   herramienta: string;
   detalle: string;
+  /** Ver `ActividadAgente.estresado`. */
+  estresado?: boolean;
   subagentes: SubagenteOficina[];
   /** Lo que el usuario le puso en la oficina; vacío si nada. `nombre` ya lo trae aplicado. */
   nombrePropio: string;
@@ -350,6 +356,15 @@ export type ClaudeMonitorApi = {
   /** Nombre y nota de una sesión (`sessionId`) o subagente (`sessionId/agentId`).
    *  Los dos vacíos lo borran. */
   nombrar: (clave: string, nombre: string, nota: string) => Promise<Result<null>>;
+  /** Cómo se ve cada agente en la oficina ("Personalizar"): por sesión y por cuenta. */
+  apariencias: () => Promise<Result<Apariencias>>;
+  /** Guarda (o borra, con `null`) la de una sesión o la de su cuenta; devuelve todas. */
+  guardarApariencia: (
+    alcance: 'sesion' | 'cuenta',
+    sessionId: string,
+    profileId: string,
+    apariencia: unknown
+  ) => Promise<Result<Apariencias>>;
   /** La conversación con herramientas, subagentes y mensajes. Con `agentId`,
    *  la de ese subagente de la sesión. */
   conversacion: (sessionId: string, agentId?: string) => Promise<Result<Conversacion>>;
@@ -400,3 +415,9 @@ declare global {
     claudeMonitor: ClaudeMonitorApi;
   }
 }
+
+/** Cómo se ve un agente en la oficina ("Personalizar"); los campos los define
+ *  el parche de Pixel Agents (`looks.ts`): base, skin, hair, hairStyle… */
+export type Apariencia = Record<string, string | number>;
+/** Por sesión, y por cuenta para las sesiones que no tienen la suya. */
+export type Apariencias = { sesiones: Record<string, Apariencia>; cuentas: Record<string, Apariencia> };

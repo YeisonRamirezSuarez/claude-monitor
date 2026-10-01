@@ -230,6 +230,24 @@ export async function countCompactions(filePath: string): Promise<number> {
   return count;
 }
 
+export type Compactacion = { preTokens?: number; postTokens?: number; durationMs?: number };
+
+/** Los números de la última compactación (`compactMetadata` de su `compact_boundary`); null si no hay o no se lee. */
+export async function ultimaCompactacion(filePath: string): Promise<Compactacion | null> {
+  const input = createReadStream(filePath, { encoding: 'utf8' });
+  const rl = createInterface({ input, crlfDelay: Infinity });
+  let ultima: string | null = null;
+  try {
+    for await (const line of rl) if (line.includes('"compact_boundary"')) ultima = line;
+    return ultima ? ((JSON.parse(ultima) as { compactMetadata?: Compactacion }).compactMetadata ?? null) : null;
+  } catch {
+    return null;
+  } finally {
+    rl.close();
+    input.destroy();
+  }
+}
+
 /**
  * `child` está estrictamente dentro de `parent` (no es el mismo directorio,
  * y no es un directorio hermano que solo comparte el prefijo del nombre,

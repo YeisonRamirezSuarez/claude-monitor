@@ -11,8 +11,8 @@
  */
 
 import { app, powerMonitor, safeStorage } from 'electron';
-import { copyFile, mkdir, readdir, readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgenteOficina, EstadoAgente, EstadoTelegram } from '../shared/types';
 import { agentesVivos, conversacionDe, rutaViva } from './oficina';
@@ -23,6 +23,8 @@ import { Puente } from './puente';
 import { anotar } from './registro';
 import { borrarViejas, CONFIG_INICIAL, guardarConfig, leerConfig, nuevoCodigo, type ConfigRemoto } from './remoto-config';
 import { hayNode, instalarHook, sacarHook } from './remoto-instalar';
+import { argsCambio, marcaCierre, type CambioModelo } from './remoto-formato';
+import { ultimaCompactacion } from './sessions';
 import { iniciarServidor } from './remoto-servidor';
 import { Telegram, TelegramError } from './telegram';
 import { progresoDe } from './telegram-progreso';
@@ -208,26 +210,56 @@ async function ultimoMensaje(transcript: string): Promise<string> {
   return [...c.items].reverse().find((i) => i.tipo === 'claude')?.texto ?? '';
 }
 
-const tomador = new Tomador({
-  registro: async (sessionId) => {
-    for (const p of (await allProfiles()).profiles) {
-      if (p.entorno?.tipo === 'wsl') continue;
-      const a = (await agentesVivos([p])).find((x) => x.sessionId === sessionId);
-      if (!a) continue;
-      const dir = join(p.configDir, 'sessions');
-      const entradas: Array<{ sessionId?: string; pid: number; procStart?: unknown }> = [];
-      for (const f of await readdir(dir).catch(() => [] as string[])) {
-        try {
-          entradas.push(JSON.parse(await readFile(join(dir, f), 'utf8')));
-        } catch {
-          // un archivo a medio escribir o ajeno no debe voltear la búsqueda
-        }
+/** Dónde corre una sesión de Windows: su pid (de `sessions/<pid>.json`), cuenta y carpeta. */
+async function buscarRegistro(sessionId: string): Promise<Registro | null> {
+  for (const p of (await allProfiles()).profiles) {
+    if (p.entorno?.tipo === 'wsl') continue;
+    const a = (await agentesVivos([p])).find((x) => x.sessionId === sessionId);
+    if (!a) continue;
+    const dir = join(p.configDir, 'sessions');
+    const entradas: Array<{ sessionId?: string; pid: number; procStart?: unknown }> = [];
+    for (const f of await readdir(dir).catch(() => [] as string[])) {
+      try {
+        entradas.push(JSON.parse(await readFile(join(dir, f), 'utf8')));
+      } catch {
+        // un archivo a medio escribir o ajeno no debe voltear la búsqueda
       }
-      const e = elegirEntrada(entradas, sessionId);
-      if (e) return registroDe(e, p.configDir, a.cwd, a.estado === 'esperando');
     }
-    return null;
-  },
+    const e = elegirEntrada(entradas, sessionId);
+    if (e) return registroDe(e, p.configDir, a.cwd, a.estado === 'esperando');
+  }
+  return null;
+}
+
+/** Lo pone `registrarIpcRemoto`: reanudar en una terminal vive en main.ts. */
+let reabrir: ((sessionId: string, extra?: string[]) => Promise<void>) | null = null;
+
+/**
+ * /model y /effort desde Telegram: cierra el proceso de la sesión (si no lo
+ * cerró ya una toma) y la reanuda en una terminal con las banderas nuevas.
+ */
+async function cambiarModelo(sessionId: string, cambio: CambioModelo): Promise<void> {
+  if (!reabrir) throw new Error('La app todavía está arrancando.');
+  exigirSinTurno(sessionId);
+  // Tomada, su consola ya se cerró al tomarla: sólo falta reabrirla.
+  const reg = tomador.registroDe(sessionId) ? null : await buscarRegistro(sessionId);
+  if (reg) {
+    // La marca le dice a su ventana que se cierre al salir `claude` (ver `conCierre`).
+    const marca = join(tmpdir(), marcaCierre(sessionId));
+    await writeFile(marca, '');
+    try {
+      await matarSiEsElMismo(reg.pid, reg.procStart, reg.configDir);
+      // La ventana la borra al cerrarse; una ventana vieja (sin la cola) no: que no cierre la próxima.
+      for (let i = 0; i < 30 && (await readFile(marca).then(() => true, () => false)); i++) await new Promise((r) => setTimeout(r, 100));
+    } finally {
+      await rm(marca, { force: true });
+    }
+  }
+  await reabrir(sessionId, argsCambio(cambio));
+}
+
+const tomador = new Tomador({
+  registro: buscarRegistro,
   matar: matarSiEsElMismo,
   lanzar: lanzarClaude,
   alTexto: (sessionId, texto) => {
@@ -360,6 +392,11 @@ async function iniciar(): Promise<void> {
     const p = new Puente({
       canal,
       vinculo: () => (cfg.chatId !== null && cfg.userId !== null ? { chatId: cfg.chatId, userId: cfg.userId } : null),
+      quemarCodigo: (de) => {
+        codigo = null;
+        error = 'Alguien probó 5 códigos de vinculación equivocados: el código se anuló. Pedí otro cuando estés listo.';
+        anotar('telegram: código de vinculación anulado por intentos fallidos', de);
+      },
       vincular: async (v) => {
         cfg.temas = temasTrasVincular(cfg.temas, cfg.chatId, v.chatId);
         cfg.chatId = v.chatId;
@@ -388,6 +425,8 @@ async function iniciar(): Promise<void> {
       },
       carpetaImagenes: IMAGENES(),
       tomar: (s, t) => tomador.enviar(s, t),
+      cambiarModelo,
+      compactacion: ultimaCompactacion,
       alError: (e) => anotar('telegram: error', { error: String(e) }),
       // 👀 en su mensaje apenas le llega a la sesión, y desde ahí "escribiendo…" mientras trabaja.
       // Al terminar el turno se va el "⏳ Trabajando…": en el tema queda sólo la respuesta final.
@@ -422,7 +461,12 @@ async function iniciar(): Promise<void> {
       )
       .catch(async (e) => {
         const revocado = e instanceof TelegramError && e.codigo === 401;
-        error = revocado ? 'Telegram rechazó el token: revisalo.' : String(e);
+        const conflicto = e instanceof TelegramError && e.codigo === 409;
+        error = revocado
+          ? 'Telegram rechazó el token: revisalo.'
+          : conflicto
+            ? 'Otro programa está leyendo este bot con el mismo token (otra instancia de la app o un webhook). Cerralo o creá otro bot.'
+            : String(e);
         if (revocado) bot = '';
         anotar('telegram: se apagó', { error });
         cfg.activo = false;
@@ -465,7 +509,8 @@ export function exigirSinTurno(sessionId: string): void {
 
 type Handle = <T>(canal: string, fn: (...args: any[]) => Promise<T>) => void;
 
-export function registrarIpcRemoto(handle: Handle, reanudar: (sessionId: string) => Promise<void>): void {
+export function registrarIpcRemoto(handle: Handle, reanudar: (sessionId: string, extra?: string[]) => Promise<void>): void {
+  reabrir = reanudar;
   handle('telegram:estado', async () => {
     await cargado;
     return estado();

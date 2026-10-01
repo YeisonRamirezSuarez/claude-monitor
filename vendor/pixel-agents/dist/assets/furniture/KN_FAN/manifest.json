@@ -1,0 +1,14 @@
+{
+  "id": "KN_FAN",
+  "name": "Ventilador",
+  "category": "electronics",
+  "type": "asset",
+  "file": "KN_FAN.png",
+  "width": 16,
+  "height": 32,
+  "footprintW": 1,
+  "footprintH": 2,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 1
+}

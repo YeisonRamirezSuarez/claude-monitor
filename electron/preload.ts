@@ -33,6 +33,9 @@ const api: ClaudeMonitorApi = {
   mapaPixel: () => ipcRenderer.invoke('oficina:mapaPixel'),
   equipo: (sessionId) => ipcRenderer.invoke('oficina:equipo', sessionId),
   nombrar: (clave, nombre, nota) => ipcRenderer.invoke('oficina:nombrar', clave, nombre, nota),
+  apariencias: () => ipcRenderer.invoke('oficina:apariencias'),
+  guardarApariencia: (alcance, sessionId, profileId, apariencia) =>
+    ipcRenderer.invoke('oficina:guardarApariencia', alcance, sessionId, profileId, apariencia),
   conversacion: (sessionId, agentId) => ipcRenderer.invoke('oficina:conversacion', sessionId, agentId),
   telegramEstado: () => ipcRenderer.invoke('telegram:estado'),
   telegramToken: (token) => ipcRenderer.invoke('telegram:token', token),

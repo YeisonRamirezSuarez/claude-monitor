@@ -40,6 +40,8 @@ function armar(extra: Partial<DepsPuente> = {}) {
     },
     carpetaImagenes: 'C:/img',
     tomar: vi.fn(async () => {}),
+    cambiarModelo: vi.fn(async () => {}),
+    esperaCambioMs: 0,
     esperaAlbumMs: 0,
     esperaReintentoMs: 0,
     ...extra
@@ -89,6 +91,24 @@ describe('Puente', () => {
     expect(await espera).toEqual({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } });
   });
 
+  it('permiso: permitir borra el mensaje y rechazar le saca los botones', async () => {
+    const borrar = vi.fn(async () => {});
+    const editar = vi.fn(async () => {});
+    const { p, deps, enviados } = armar();
+    Object.assign(deps.canal, { borrar, editar });
+    const a = p.atenderHook({ hook_event_name: 'PermissionRequest', session_id: 's1', tool_name: 'Bash', tool_input: {} });
+    await tick();
+    await p.atenderUpdate(boton(`${idDe(enviados[0].botones)}:si`));
+    await a;
+    expect(borrar).toHaveBeenCalledWith(CHAT, 1);
+    const b = p.atenderHook({ hook_event_name: 'PermissionRequest', session_id: 's1', tool_name: 'Bash', tool_input: {} });
+    await tick();
+    await p.atenderUpdate(boton(`${idDe(enviados[1].botones)}:no`));
+    await b;
+    expect(editar).toHaveBeenCalledTimes(1);
+    expect(editar).toHaveBeenCalledWith(CHAT, 2, expect.stringContaining('Rechazado'));
+  });
+
   it('avisa la entrega del mensaje (Stop, toma y guardado), y no si la sesión terminó', async () => {
     const alEntregar = vi.fn();
     const { p, temas } = armar({ alEntregar, sesiones: async () => [agente('s1'), agente('s2', 'escribiendo')] });
@@ -126,6 +146,69 @@ describe('Puente', () => {
     await tick();
     await p.atenderUpdate(texto('Violeta', temas.get('s1')));
     expect(await e2).toMatchObject({ hookSpecificOutput: { updatedInput: { answers: { '¿Color?': 'Violeta' } } } });
+  });
+
+  it('pregunta con varias: se hacen de a una y el hook recibe todas las respuestas juntas', async () => {
+    const { p, enviados, temas } = armar();
+    const input = {
+      questions: [
+        { question: '¿Color?', options: [{ label: 'Rojo' }, { label: 'Verde' }] },
+        { question: '¿Talla?', options: [{ label: 'S' }, { label: 'M' }] }
+      ]
+    };
+    const e = p.atenderHook({ hook_event_name: 'PreToolUse', session_id: 's1', tool_name: 'AskUserQuestion', tool_input: input });
+    await tick();
+    const id = idDe(enviados[0].botones);
+    await p.atenderUpdate(boton(`${id}:o1`));
+    await tick();
+    expect(enviados[1].texto).toContain('¿Talla?');
+    await p.atenderUpdate(texto('XL', temas.get('s1')));
+    expect(await e).toMatchObject({ hookSpecificOutput: { updatedInput: { answers: { '¿Color?': 'Verde', '¿Talla?': 'XL' } } } });
+  });
+
+  it('un botón de una espera que ya no existe (app reiniciada) deja el mensaje sin botones y lo dice', async () => {
+    const { p, deps } = armar();
+    const u = boton('dead0001:o0');
+    u.callback_query.message = { ...u.callback_query.message, text: '❓ ¿Dónde?' } as typeof u.callback_query.message;
+    await p.atenderUpdate(u);
+    expect(deps.canal.editar).toHaveBeenCalledWith(CHAT, 1, expect.stringMatching(/^❓ ¿Dónde\?\n\n⌛ Ya no está vigente/));
+    expect(deps.canal.contestarBoton).toHaveBeenCalledWith('cb', 'Ya no está vigente.');
+  });
+
+  it('pregunta con varias: el texto que llega mientras se pasa a la siguiente espera y responde a la siguiente', async () => {
+    const { p, deps, enviados, temas } = armar();
+    const input = {
+      questions: [
+        { question: '¿Color?', options: [{ label: 'Rojo' }] },
+        { question: '¿Talla?', options: [{ label: 'S' }] }
+      ]
+    };
+    // El enviar de la 2.ª pregunta tarda: mientras, llega un texto.
+    let soltar: () => void = () => {};
+    const original = deps.canal.enviar as ReturnType<typeof vi.fn>;
+    original.mockImplementationOnce(async (_c: number, t: string, op: object = {}) => {
+      enviados.push({ texto: t, ...op });
+      return enviados.length;
+    });
+    const e = p.atenderHook({ hook_event_name: 'PreToolUse', session_id: 's1', tool_name: 'AskUserQuestion', tool_input: input });
+    await tick();
+    original.mockImplementationOnce(
+      (_c: number, t: string, op: object = {}) =>
+        new Promise<number>((ok) => {
+          soltar = () => {
+            enviados.push({ texto: t, ...op });
+            ok(enviados.length);
+          };
+        })
+    );
+    const toque = p.atenderUpdate(boton(`${idDe(enviados[0].botones)}:o0`));
+    await tick();
+    const llegada = p.atenderUpdate(texto('XL', temas.get('s1')));
+    await tick();
+    expect(deps.tomar).not.toHaveBeenCalled();
+    soltar();
+    await Promise.all([toque, llegada]);
+    expect(await e).toMatchObject({ hookSpecificOutput: { updatedInput: { answers: { '¿Color?': 'Rojo', '¿Talla?': 'XL' } } } });
   });
 
   it('volver a la PC suelta todo con {} y un botón viejo no toca la espera siguiente', async () => {
@@ -195,6 +278,22 @@ describe('Puente', () => {
   });
 
   // Final review M6: sin Temas no hay un hilo por sesión y todo se mezclaría en un solo chat.
+  it('vincular: al quinto código equivocado se quema el vigente y se anota quién fue; el bueno ya no entra', async () => {
+    const vincular = vi.fn(async () => {});
+    const quemarCodigo = vi.fn();
+    let c: { codigo: string; vence: number } | null = { codigo: '123456', vence: Date.now() + 60_000 };
+    const { p, enviados } = armar({ vinculo: () => null, vincular, codigo: () => c, quemarCodigo });
+    for (let i = 0; i < 4; i++) await p.atenderUpdate(enForo(texto(`/vincular 00000${i}`)));
+    expect(quemarCodigo).not.toHaveBeenCalled();
+    await p.atenderUpdate(enForo(texto('/vincular 000009')));
+    expect(quemarCodigo).toHaveBeenCalledWith({ userId: YO, chatId: CHAT });
+    c = null; // lo que hace la app al quemarlo
+    await p.atenderUpdate(enForo(texto('/vincular 123456')));
+    expect(vincular).not.toHaveBeenCalled();
+    // Al que erró no se le contesta nada.
+    expect(enviados).toHaveLength(0);
+  });
+
   it('vincular: sólo desde un supergrupo con Temas; si no, lo pide', async () => {
     const vincular = vi.fn(async () => {});
     const { p, enviados } = armar({ vinculo: () => null, vincular, codigo: () => ({ codigo: '123456', vence: Date.now() + 60_000 }) });
@@ -221,6 +320,42 @@ describe('Puente', () => {
     const { p, setFuera } = armar();
     setFuera(false);
     expect(await p.atenderHook({ hook_event_name: 'SessionStart', session_id: 's1' })).toHaveProperty('hookSpecificOutput.additionalContext');
+  });
+
+  it('PostCompact avisa en la consola siempre y en el tema sólo si la sesión tiene uno', async () => {
+    const { p, enviados, temas, setFuera } = armar();
+    setFuera(false);
+    const r = (await p.atenderHook({ hook_event_name: 'PostCompact', session_id: 's1' })) as { systemMessage: string };
+    expect(r.systemMessage).toContain('Compactada');
+    expect(enviados).toHaveLength(0);
+    temas.set('s1', 555);
+    await p.atenderHook({ hook_event_name: 'PostCompact', session_id: 's1' });
+    expect(enviados).toHaveLength(1);
+    expect(enviados[0]).toMatchObject({ tema: 555, texto: expect.stringContaining('Compactada') });
+  });
+
+  it('PreCompact pone un reloj que se edita, y PostCompact lo cierra con los tokens de antes y después', async () => {
+    const compactacion = vi.fn(async () => ({ preTokens: 239497, postTokens: 21746, durationMs: 43803 }));
+    const { p, deps, enviados, temas } = armar({ compactacion, relojCompactarMs: 5 });
+    temas.set('s1', 555);
+    expect(await p.atenderHook({ hook_event_name: 'PreCompact', session_id: 's1' })).toEqual({});
+    expect(enviados).toEqual([{ texto: '🗜 Compactando la conversación… ⏱ 0:00', tema: 555 }]);
+    await new Promise((r) => setTimeout(r, 30));
+    const editar = deps.canal.editar as ReturnType<typeof vi.fn>;
+    expect(editar.mock.calls.length).toBeGreaterThan(0);
+    expect(editar.mock.calls[0][2]).toContain('🗜 Compactando');
+    const r = (await p.atenderHook({ hook_event_name: 'PostCompact', session_id: 's1', transcript_path: 'C:/t/s1.jsonl' })) as {
+      systemMessage: string;
+    };
+    expect(compactacion).toHaveBeenCalledWith('C:/t/s1.jsonl');
+    expect(r.systemMessage).toBe('✅ Compactada en 0:44 · 239k → 22k tokens. Ya podés seguir escribiendo.');
+    await new Promise((r) => setTimeout(r, 30));
+    // El cierre edita el mismo mensaje (último en la fila) y el reloj ya no lo toca.
+    const n = editar.mock.calls.length;
+    expect(editar.mock.calls.at(-1)).toEqual([CHAT, 1, r.systemMessage]);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(editar.mock.calls.length).toBe(n);
+    expect(enviados).toHaveLength(1);
   });
 
   it('un tema borrado a mano se vuelve a crear', async () => {
@@ -390,13 +525,30 @@ describe('Puente', () => {
     expect(stop).toEqual({});
   });
 
-  it('en la PC nunca toma una sesión quieta: lo guarda, avisa que no escucha y no la marca trabajando', async () => {
+  it('en la PC, una sesión quieta se reabre en su consola con el mensaje (nunca se toma con -p)', async () => {
     const alEntregar = vi.fn();
     const { p, deps, temas, setFuera, enviados } = armar({ alEntregar });
     setFuera(false);
     temas.set('s1', 901);
     await p.atenderUpdate(texto('seguí', 901));
+    await new Promise((r) => setTimeout(r, 5));
     expect(deps.tomar).not.toHaveBeenCalled();
+    expect(deps.cambiarModelo).toHaveBeenCalledWith('s1', { mensaje: 'seguí' });
+    expect(alEntregar).toHaveBeenCalledWith('s1', 1, true);
+    expect(enviados).toHaveLength(0);
+  });
+
+  it('en la PC, una sesión de Desktop quieta no se reabre: lo guarda y avisa que no escucha', async () => {
+    const alEntregar = vi.fn();
+    const { p, deps, temas, setFuera, enviados } = armar({
+      alEntregar,
+      sesiones: async () => [{ ...agente('s1'), origen: 'desktop' }]
+    });
+    setFuera(false);
+    temas.set('s1', 901);
+    await p.atenderUpdate(texto('seguí', 901));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(deps.cambiarModelo).not.toHaveBeenCalled();
     expect(alEntregar).toHaveBeenCalledWith('s1', 1, false);
     expect(enviados.at(-1)!.texto).toContain('todavía no escucha Telegram');
     expect(await p.atenderHook({ hook_event_name: 'Stop', session_id: 's1' })).toMatchObject({ reason: expect.stringContaining('seguí') });
@@ -416,6 +568,56 @@ describe('Puente', () => {
     await tick();
     expect(orden).toEqual(['terminar:s1', 'enviar']);
     p.soltarTodo();
+  });
+
+  it('/model con la sesión quieta la reabre ya, sin confirmar (la sesión contesta sola); nunca pasa como mensaje', async () => {
+    const { p, deps, temas, enviados } = armar();
+    temas.set('s1', 901);
+    await p.atenderUpdate(texto('/model opus /effort high', 901));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(deps.cambiarModelo).toHaveBeenCalledWith('s1', { model: 'opus', effort: 'high' });
+    expect(deps.tomar).not.toHaveBeenCalled();
+    expect(enviados.some((e) => e.texto.includes('✅'))).toBe(false);
+  });
+
+  it('/compact la reabre compactando sin "Reabierta…": el reloj y el cierre los ponen PreCompact y PostCompact', async () => {
+    const { p, deps, temas, enviados } = armar();
+    temas.set('s1', 901);
+    await p.atenderUpdate(texto('/compact', 901));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(deps.cambiarModelo).toHaveBeenCalledWith('s1', { compactar: '' });
+    expect(enviados).toHaveLength(0);
+  });
+
+  it('/model con la sesión trabajando espera al Stop del turno, que se suelta sin escuchar', async () => {
+    const { p, deps, temas, enviados } = armar();
+    temas.set('s2', 902);
+    await p.atenderUpdate(texto('/effort max', 902));
+    expect(deps.cambiarModelo).not.toHaveBeenCalled();
+    expect(enviados.at(-1)!.texto).toContain('cuando termine');
+    expect(await p.atenderHook({ hook_event_name: 'Stop', session_id: 's2' })).toEqual({});
+    await new Promise((r) => setTimeout(r, 5));
+    expect(deps.cambiarModelo).toHaveBeenCalledWith('s2', { effort: 'max' });
+  });
+
+  it('/model escuchando en un Stop: suelta la espera y la reabre', async () => {
+    const { p, deps, temas } = armar();
+    temas.set('s1', 901);
+    const stop = p.atenderHook({ hook_event_name: 'Stop', session_id: 's1' });
+    await tick();
+    await p.atenderUpdate(texto('/model sonnet', 901));
+    expect(await stop).toEqual({});
+    await new Promise((r) => setTimeout(r, 5));
+    expect(deps.cambiarModelo).toHaveBeenCalledWith('s1', { model: 'sonnet' });
+  });
+
+  it('/model con un valor fuera de la lista explica el uso y no toca nada', async () => {
+    const { p, deps, temas, enviados } = armar();
+    temas.set('s1', 901);
+    await p.atenderUpdate(texto('/model gpt', 901));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(deps.cambiarModelo).not.toHaveBeenCalled();
+    expect(enviados.at(-1)!.texto).toContain('/effort low|medium');
   });
 
   it('un Stop con la señal ya abortada no consume lo guardado', async () => {

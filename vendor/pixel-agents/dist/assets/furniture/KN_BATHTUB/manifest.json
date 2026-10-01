@@ -1,0 +1,14 @@
+{
+  "id": "KN_BATHTUB",
+  "name": "Bañera",
+  "category": "bathroom",
+  "type": "asset",
+  "file": "KN_BATHTUB.png",
+  "width": 32,
+  "height": 16,
+  "footprintW": 2,
+  "footprintH": 1,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 0
+}

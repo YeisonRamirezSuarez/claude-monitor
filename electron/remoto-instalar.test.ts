@@ -14,7 +14,7 @@ describe('conHook / sinHook', () => {
     expect(s.hooks.Stop).toHaveLength(2);
     expect(s.hooks.Stop[0].hooks[0].command).toBe('otro');
     expect(s.hooks.PreToolUse).toEqual([{ matcher: 'AskUserQuestion', hooks: [{ type: 'command', command: CMD, timeout: 86400 }] }]);
-    expect(Object.keys(s.hooks).sort()).toEqual(['PermissionRequest', 'PostToolUse', 'PreToolUse', 'SessionStart', 'Stop']);
+    expect(Object.keys(s.hooks).sort()).toEqual(['PermissionRequest', 'PostCompact', 'PostToolUse', 'PreCompact', 'PreToolUse', 'SessionStart', 'Stop']);
   });
   it('es idempotente', () => {
     const una = conHook('{}', CMD)!;

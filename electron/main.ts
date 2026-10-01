@@ -27,13 +27,15 @@ import {
   syncAllPlugins
 } from './profiles';
 import { countCompactions, deleteSession, listSessions, mezclarRaices } from './sessions';
-import { openTerminal } from './terminal';
+import { openTerminal, psQuote, shQuote } from './terminal';
 import { tokensFor } from './tokens';
 import { dondeEstaAbierta, quienLaTiene } from './liveness';
 import { agentesVivos, conversacionDe, equipoDe } from './oficina';
 import { leerNombres, nombrar, type Nombre } from './nombres';
+import { guardarApariencia, leerApariencias } from './apariencias';
 import { detenerOficina, urlOficina } from './pixel-agents';
 import { detenerRemoto, exigirSinTurno, iniciarRemoto, registrarIpcRemoto, soltarTomada } from './remoto';
+import { conCierre } from './remoto-formato';
 import { readTranscript } from './transcript';
 import { readUsage } from './usage';
 import {
@@ -311,7 +313,8 @@ const claudeCon = (p: Profile) => (p.entorno?.tipo === 'wsl' ? 'claude' : 'claud
 
 /** Reanudar una sesión en una terminal nueva: lo usan la lista y el botón
  *  Reabrir del puente de Telegram (`remoto.ts`). */
-const reanudarSesion = async (id: string) => {
+/** `extra`: argumentos ya validados que van después de `--resume` (el /model de Telegram); se citan igual. */
+const reanudarSesion = async (id: string, extra: string[] = []) => {
   exigirSinTurno(id);
   const { session } = await findSession(id);
   const { profiles, activeProfileId } = await allProfiles();
@@ -341,7 +344,10 @@ const reanudarSesion = async (id: string) => {
     'Abrirla en otra terminal haría que los dos escriban el mismo transcript y se pisen: el "claude" de acá no ve al otro porque cada cuenta anota sus sesiones vivas en su propia carpeta.'
   );
   await requireLogin(target);
-  await openTerminalAs(session.cwd, `${claudeCon(target)} --resume ${session.id}`, target);
+  const citar = target.entorno?.tipo === 'wsl' ? shQuote : psQuote;
+  const resto = extra.map((a) => ` ${citar(a)}`).join('');
+  const comando = `${claudeCon(target)} --resume ${session.id}${resto}`;
+  await openTerminalAs(session.cwd, target.entorno?.tipo === 'wsl' ? comando : conCierre(comando, session.id), target);
   // Vuelve a una terminal: si el puente de Telegram la tenía tomada, ya no es suya.
   soltarTomada(session.id);
   // El aviso de cambio de cuenta por falta de cupo sólo tiene sentido en
@@ -706,6 +712,12 @@ function registerHandlers() {
     await nombrar(clave, nombre, nota);
     return null;
   });
+  handle('oficina:apariencias', () => leerApariencias());
+  handle(
+    'oficina:guardarApariencia',
+    (alcance: 'sesion' | 'cuenta', sessionId: string, profileId: string, apariencia: unknown) =>
+      guardarApariencia(alcance === 'cuenta' ? 'cuenta' : 'sesion', sessionId, profileId, apariencia)
+  );
   handle('sessions:delete', async (id: string) => {
     const { session } = await findSession(id);
     // Mismo motivo que en `desktop:resume`: el botón deshabilitado es la
@@ -727,7 +739,7 @@ function registerHandlers() {
   // Sólo acá se enciende una distro, y sólo porque el usuario apretó el botón.
   handle('wsl:encender', (distro: string) => encenderDistro(distro));
   // El puente de Telegram (spec 2026-09-28-telegram-remoto-design.md).
-  registrarIpcRemoto(handle, async (sessionId) => void (await reanudarSesion(sessionId)));
+  registrarIpcRemoto(handle, async (sessionId, extra) => void (await reanudarSesion(sessionId, extra)));
 }
 
 /** `hash` elige la vista: vacío es el panel, `oficina` la Oficina en vivo. */

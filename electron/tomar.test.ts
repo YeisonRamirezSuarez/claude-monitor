@@ -1,7 +1,7 @@
 // electron/tomar.test.ts
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { PassThrough } from 'node:stream';
-import { argsTurno, matarSiEsElMismo, textosDe, Tomador } from './tomar';
+import { argsTurno, idDeFondoEn, matarSiEsElMismo, textosDe, Tomador } from './tomar';
 import { iniciosDeProceso } from './oficina';
 
 // Sólo se pisa la consulta a PowerShell: `mismoInicio` es la de verdad.
@@ -62,7 +62,7 @@ describe('Tomador', () => {
     const { t, d, lanzados } = armar();
     const p1 = t.enviar(ID, 'uno');
     await tick();
-    expect(d.matar).toHaveBeenCalledWith(77, '1');
+    expect(d.matar).toHaveBeenCalledWith(77, '1', 'C:/cfg');
     expect(lanzados[0].env.CLAUDE_MONITOR_TOMADA).toBe('1');
     expect(lanzados[0].env.CLAUDE_CONFIG_DIR).toBe('C:/cfg');
     lanzados[0].salida.end(lineaTexto('Hecho'));
@@ -147,7 +147,7 @@ describe('Tomador', () => {
     d.registro.mockResolvedValueOnce({ pid: 88, procStart: '2', configDir: 'C:/cfg', cwd: 'C:/repo', quieta: true });
     const p3 = t.enviar(ID, 'tres');
     await tick();
-    expect(d.matar).toHaveBeenLastCalledWith(88, '2');
+    expect(d.matar).toHaveBeenLastCalledWith(88, '2', 'C:/cfg');
     lanzados[1].salida.end();
     lanzados[1].terminar(0);
     await p3;
@@ -209,9 +209,31 @@ describe('Tomador', () => {
   });
 });
 
+describe('idDeFondoEn', () => {
+  const lista = JSON.stringify([
+    { pid: 21924, id: '14f25b46', kind: 'background' },
+    { pid: 2060, sessionId: 'x', kind: 'interactive' }
+  ]);
+  it('da el id corto sólo si ese pid es una sesión en segundo plano', () => {
+    expect(idDeFondoEn(lista, 21924)).toBe('14f25b46');
+    expect(idDeFondoEn(lista, 2060)).toBeNull();
+    expect(idDeFondoEn(lista, 1)).toBeNull();
+  });
+  it('un id raro (llega a cmd.exe) o una salida que no es JSON no cuentan', () => {
+    expect(idDeFondoEn(JSON.stringify([{ pid: 5, id: 'a&calc', kind: 'background' }]), 5)).toBeNull();
+    expect(idDeFondoEn('Error: daemon', 5)).toBeNull();
+  });
+});
+
 describe('matarSiEsElMismo', () => {
   const INICIO = '133000000000000000';
-  const kill = () => vi.spyOn(process, 'kill').mockImplementation(() => true);
+  // La señal 0 es la pregunta de si sigue vivo: muerto al toque, para que no espere.
+  const kill = () =>
+    vi.spyOn(process, 'kill').mockImplementation((_p, s) => {
+      if (s === 0) throw new Error('ESRCH');
+      return true;
+    });
+  const deFondo = async () => false;
   afterEach(() => {
     vi.restoreAllMocks();
     vi.mocked(iniciosDeProceso).mockReset();
@@ -227,23 +249,32 @@ describe('matarSiEsElMismo', () => {
   it('si el pid ahora es otro proceso (otro inicio), no mata', async () => {
     const k = kill();
     vi.mocked(iniciosDeProceso).mockResolvedValue(new Map([[77, '133000000050000000']]));
-    await expect(matarSiEsElMismo(77, INICIO)).rejects.toThrow('El proceso de esa sesión ya no es el que era.');
+    await expect(matarSiEsElMismo(77, INICIO, undefined, deFondo)).rejects.toThrow('El proceso de esa sesión ya no es el que era.');
     expect(k).not.toHaveBeenCalled();
   });
 
   it('si el pid ya no existe, no mata', async () => {
     const k = kill();
     vi.mocked(iniciosDeProceso).mockResolvedValue(new Map());
-    await expect(matarSiEsElMismo(77, INICIO)).rejects.toThrow('El proceso de esa sesión ya no es el que era.');
+    await expect(matarSiEsElMismo(77, INICIO, undefined, deFondo)).rejects.toThrow('El proceso de esa sesión ya no es el que era.');
     expect(k).not.toHaveBeenCalled();
   });
 
   it('si el inicio coincide mata el pid, y lo confirma con una consulta fresca (sin caché)', async () => {
     const k = kill();
     vi.mocked(iniciosDeProceso).mockResolvedValue(new Map([[77, INICIO]]));
-    await matarSiEsElMismo(77, INICIO);
+    await matarSiEsElMismo(77, INICIO, undefined, deFondo);
     expect(iniciosDeProceso).toHaveBeenCalledWith([77], expect.any(Number), true);
-    expect(k).toHaveBeenCalledTimes(1);
-    expect(k).toHaveBeenCalledWith(77);
+    // Una vez para matar; las demás llamadas son la señal 0 (¿sigue vivo?).
+    expect(k.mock.calls.filter((c) => c[1] === undefined)).toEqual([[77]]);
+  });
+
+  it('una sesión en segundo plano no se mata (el daemon la relanzaría): se la para con claude stop', async () => {
+    const k = kill();
+    vi.mocked(iniciosDeProceso).mockResolvedValue(new Map([[77, INICIO]]));
+    const fondo = vi.fn(async () => true);
+    await matarSiEsElMismo(77, INICIO, 'C:/cfg', fondo);
+    expect(fondo).toHaveBeenCalledWith(77, 'C:/cfg');
+    expect(k.mock.calls.filter((c) => c[1] === undefined)).toEqual([]);
   });
 });

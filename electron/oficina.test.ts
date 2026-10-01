@@ -18,7 +18,21 @@ describe('actividadDe', () => {
       usuario('arregla el login'),
       asistente([{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test', description: 'Corre los tests' } }])
     ]);
-    expect(a).toEqual({ tipo: 'escribiendo', herramienta: 'Bash', detalle: 'Corre los tests' });
+    expect(a).toEqual({ tipo: 'escribiendo', herramienta: 'Bash', detalle: 'Corre los tests', estresado: false });
+  });
+
+  it('estresado: 3 herramientas fallando seguidas, o un error de la API; se le pasa con la primera que anda', () => {
+    const intento = (id: string, error: boolean) => [
+      asistente([{ type: 'tool_use', id, name: 'Bash', input: {} }]),
+      usuario([{ type: 'tool_result', tool_use_id: id, content: error ? 'Exit code 1' : 'ok', is_error: error }])
+    ];
+    const dos = [...intento('a', true), ...intento('b', true)];
+    expect(actividadDe(dos).estresado).toBe(false);
+    expect(actividadDe([...dos, ...intento('c', true)]).estresado).toBe(true);
+    expect(actividadDe([...dos, ...intento('c', true), ...intento('d', false)]).estresado).toBe(false);
+    const api = asistente([{ type: 'text', text: 'API Error: 529 Overloaded' }], { isApiErrorMessage: true });
+    expect(actividadDe([usuario('seguí'), api]).estresado).toBe(true);
+    expect(actividadDe([usuario('seguí'), api, usuario('otra vez')]).estresado).toBe(false);
   });
 
   it('distingue leer y delegar', () => {
@@ -301,6 +315,13 @@ describe('agentesVivos: sesiones de Desktop', () => {
       subagentes: [],
       mensajes: []
     });
+  });
+
+  it('sin registro pero escrita hace segundos no está pausada: trabaja (no descansa en la oficina)', async () => {
+    const perfiles = await armar();
+    await transcript(ID, 3_000); // el motor anota en un sessions/ que la app no mira
+    await enAlmacen('aaaa1111', ID);
+    expect((await agentesVivos(perfiles, ahora))[0]).toMatchObject({ origen: 'desktop', estado: 'pensando' });
   });
 
   it('la que tiene motor vivo no se duplica como pausada', async () => {

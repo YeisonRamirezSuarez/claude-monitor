@@ -1,0 +1,14 @@
+{
+  "id": "KN_WATER_COOLER",
+  "name": "Dispensador de agua",
+  "category": "kitchen",
+  "type": "asset",
+  "file": "KN_WATER_COOLER.png",
+  "width": 16,
+  "height": 32,
+  "footprintW": 1,
+  "footprintH": 2,
+  "canPlaceOnWalls": false,
+  "canPlaceOnSurfaces": false,
+  "backgroundTiles": 1
+}

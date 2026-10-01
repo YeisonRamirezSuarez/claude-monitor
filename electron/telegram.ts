@@ -77,8 +77,17 @@ export class Telegram {
     return this.llamar('getMe', {});
   }
 
+  /**
+   * Telegram contesta a más tardar a los `esperaSeg`; con tope propio un poco mayor, porque si la red se cortó
+   * (suspender, cambiar de Wi-Fi) la respuesta no llega nunca y sin tope el bot queda sordo hasta 5 min (undici).
+   */
   actualizaciones(offset: number, esperaSeg = 50, señal?: AbortSignal): Promise<Update[]> {
-    return this.llamar('getUpdates', { offset, timeout: esperaSeg, allowed_updates: ['message', 'callback_query'] }, señal);
+    const tope = AbortSignal.timeout((esperaSeg + 15) * 1000);
+    return this.llamar(
+      'getUpdates',
+      { offset, timeout: esperaSeg, allowed_updates: ['message', 'callback_query'] },
+      señal ? AbortSignal.any([señal, tope]) : tope
+    );
   }
 
   /** `md`: el texto es Markdown del agente y va con formato; si Telegram no
@@ -150,7 +159,10 @@ export class Telegram {
   /**
    * Long polling hasta que se aborte `señal`. Un error de red espera y
    * reintenta con espera creciente (hasta 60 s); un 401 (token revocado) corta
-   * el bucle lanzando, para que el puente se apague y avise.
+   * el bucle lanzando, para que el puente se apague y avise. Un 409 es otro
+   * programa pidiendo updates con el mismo token (otra instancia, un webhook):
+   * uno suelto pasa al reiniciar; tres seguidos es que el otro sigue ahí y se
+   * repartirían los mensajes, así que también corta.
    */
   async escuchar(
     offset: number,
@@ -160,14 +172,17 @@ export class Telegram {
     alError?: (e: unknown, u: Update) => void
   ): Promise<void> {
     let espera = 1000;
+    let conflictos = 0;
     while (!señal.aborted) {
       let lote: Update[];
       try {
         lote = await this.actualizaciones(offset, 50, señal);
         espera = 1000;
+        conflictos = 0;
       } catch (e) {
         if (señal.aborted) return;
         if (e instanceof TelegramError && e.codigo === 401) throw e;
+        if (e instanceof TelegramError && e.codigo === 409 && ++conflictos >= 3) throw e;
         await esperar(espera);
         espera = Math.min(espera * 2, 60_000);
         continue;

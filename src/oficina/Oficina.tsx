@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { AgenteOficina, ProfileWithStatus } from '../../shared/types';
+import type { AgenteOficina, Apariencias, ProfileWithStatus } from '../../shared/types';
 import { sesionesAAdoptar } from './adopcion';
 import Sala from './Sala';
 
@@ -76,6 +76,13 @@ export default function Oficina({ profiles, enVentana = false, onClose }: Props)
   const urlVista = useRef('');
   /** Las sesiones vivas de la última lectura, para el clic en un personaje. */
   const vivasRef = useRef(new Set<string>());
+  /** Cómo se ve cada agente ("Personalizar" en la oficina), por sesión y por cuenta. */
+  const [apariencias, setApariencias] = useState<Apariencias>({ sesiones: {}, cuentas: {} });
+  const agentesRef = useRef<AgenteOficina[]>([]);
+  agentesRef.current = agentes;
+  useEffect(() => {
+    window.claudeMonitor.apariencias().then((r) => r.ok && setApariencias(r.data));
+  }, []);
 
   // Se vuelve a preguntar la URL: si el servidor de Pixel Agents murió y la app
   // lo relanzó, tiene otro puerto y token, y el iframe viejo quedaría congelado.
@@ -138,12 +145,36 @@ export default function Oficina({ profiles, enVentana = false, onClose }: Props)
   const origen = urlPixel ? new URL(urlPixel).origin : '';
   const alPixel = (msg: unknown) => iframe.current?.contentWindow?.postMessage(msg, origen);
 
+  /** "Personalizar" en la oficina: se guarda para la sesión de ese personaje o para su cuenta. */
+  const guardarApariencia = async (d: { agentId: number; look: unknown; scope: unknown }) => {
+    const mapa = await window.claudeMonitor.mapaPixel();
+    const pj = mapa.ok ? mapa.data.find((p) => p.id === d.agentId) : undefined;
+    const a = pj && agentesRef.current.find((x) => x.sessionId === pj.sessionId);
+    if (!pj || !a) return avisar('No sé de qué sesión es ese personaje: probá de nuevo en un segundo.');
+    const r = await window.claudeMonitor.guardarApariencia(d.scope === 'cuenta' ? 'cuenta' : 'sesion', pj.sessionId, a.profileId, d.look ?? null);
+    if (!r.ok) return avisar(`No pude guardar la apariencia: ${r.error}`);
+    setApariencias(r.data);
+    avisar(d.look === null ? 'Apariencia quitada.' : d.scope === 'cuenta' ? `Guardada para todas las sesiones de ${a.profileName}.` : 'Guardada para esta sesión.');
+  };
+
+  // Cómo se ve cada uno: la apariencia de su sesión, o la de su cuenta.
+  useEffect(() => {
+    if (!origen) return;
+    const items = pixel.map((p) => {
+      const a = agentes.find((x) => x.sessionId === p.sessionId);
+      return { agentId: p.id, look: (a && (apariencias.sesiones[p.sessionId] ?? apariencias.cuentas[a.profileId])) ?? null };
+    });
+    if (items.length) alPixel({ type: 'claude-monitor:looks', items });
+  }, [pixel, agentes, apariencias, origen, versionPixel]);
+
   // El clic en un personaje llega por postMessage desde el iframe (parche en
   // `vendor/pixel-agents`) con su id numérico.
   useEffect(() => {
     if (!origen) return;
     const onMsg = async (e: MessageEvent) => {
-      if (e.origin !== origen || e.data?.type !== 'claude-monitor:focus' || typeof e.data.agentId !== 'number') return;
+      if (e.origin !== origen || typeof e.data?.agentId !== 'number') return;
+      if (e.data.type === 'claude-monitor:apariencia') return guardarApariencia(e.data);
+      if (e.data.type !== 'claude-monitor:focus') return;
       const mapa = await window.claudeMonitor.mapaPixel();
       const pj = mapa.ok ? mapa.data.find((p) => p.id === e.data.agentId) : undefined;
       if (!pj) return avisar('Pixel Agents no sabe todavía de qué sesión es ese personaje. Probá de nuevo en un segundo.');
@@ -240,13 +271,18 @@ export default function Oficina({ profiles, enVentana = false, onClose }: Props)
     if (items.length) alPixel({ type: 'claude-monitor:labels', items });
     // El estado real de cada uno (del transcript y del registro de sesiones
     // vivas): en las sesiones sin hooks la oficina pierde eventos y se queda
-    // con lo último que dedujo.
+    // con lo último que dedujo. Estresado va aparte del estado (que usan la
+    // lista y Telegram) y sólo para la oficina, que lo lleva al baño; pedir
+    // permiso gana, porque ahí te espera a vos.
+    const paraPixel = (estado: string, estresado?: boolean) => (estresado && estado !== 'permiso' ? 'estresado' : estado);
     const estados = agentes.flatMap((a) => {
       const p = pixel.find((x) => x.sessionId === a.sessionId);
       if (!p) return [];
       return [
-        { agentId: p.id, parentToolId: null, estado: a.estado },
-        ...a.subagentes.filter((s) => s.toolUseId).map((s) => ({ agentId: p.id, parentToolId: s.toolUseId, estado: s.estado }))
+        { agentId: p.id, parentToolId: null, estado: paraPixel(a.estado, a.estresado) },
+        ...a.subagentes
+          .filter((s) => s.toolUseId)
+          .map((s) => ({ agentId: p.id, parentToolId: s.toolUseId, estado: paraPixel(s.estado, s.estresado) }))
       ];
     });
     if (estados.length) alPixel({ type: 'claude-monitor:estados', items: estados });
