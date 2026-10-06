@@ -41,6 +41,16 @@ describe('mergeSettings', () => {
     expect(salida.theme).toBe('dark');
   });
 
+  it('el modo de permisos del pozo llega a la cuenta', () => {
+    const pozo = JSON.stringify({
+      permissions: { defaultMode: 'bypassPermissions' },
+      skipDangerousModePermissionPrompt: true
+    });
+    const salida = JSON.parse(mergeSettings(pozo, '{"theme":"dark"}')!);
+    expect(salida.permissions.defaultMode).toBe('bypassPermissions');
+    expect(salida.skipDangerousModePermissionPrompt).toBe(true);
+  });
+
   it('devuelve null si no hay nada que cambiar, para no reescribir en cada arranque', () => {
     const yaHecho = mergeSettings(POZO, '{"theme":"dark"}')!;
     expect(mergeSettings(POZO, yaHecho)).toBeNull();

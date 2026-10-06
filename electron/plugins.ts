@@ -23,10 +23,18 @@ import { esWsl } from './wsl';
  * cualquier cosa que el usuario haya puesto ahí son de esa cuenta.
  */
 
-/** Lo que define qué plugins corren y qué muestran. El pozo manda: si una clave
- *  no está en el pozo, se saca de la cuenta, así apagar un plugin en el pozo lo
- *  apaga en todos lados en vez de dejarlo colgado en una cuenta cualquiera. */
-export const PLUGIN_KEYS = ['enabledPlugins', 'extraKnownMarketplaces', 'statusLine', 'hooks'] as const;
+/** Lo que define qué plugins corren y qué muestran, y en qué modo de permisos
+ *  arranca la sesión. El pozo manda: si una clave no está en el pozo, se saca de
+ *  la cuenta, así apagar un plugin en el pozo lo apaga en todos lados en vez de
+ *  dejarlo colgado en una cuenta cualquiera. */
+export const PLUGIN_KEYS = [
+  'enabledPlugins',
+  'extraKnownMarketplaces',
+  'statusLine',
+  'hooks',
+  'permissions',
+  'skipDangerousModePermissionPrompt'
+] as const;
 
 /** Las carpetas que el pozo presta enteras. `plugins/` trae los marketplaces
  *  ya clonados; `skills/`, `agents/` y `commands/` son lo que el usuario
