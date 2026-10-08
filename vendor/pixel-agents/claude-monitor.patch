@@ -1144,10 +1144,10 @@ index 0000000..22bd6de
 +console.log(`${Object.keys(PETS).length} pets written to ${OUT}`);
 diff --git a/server/__tests__/claudeMonitorAdoption.test.ts b/server/__tests__/claudeMonitorAdoption.test.ts
 new file mode 100644
-index 0000000..a736ff0
+index 0000000..11bd77b
 --- /dev/null
 +++ b/server/__tests__/claudeMonitorAdoption.test.ts
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,162 @@
 +// claude-monitor patch: adopting sub-agents launched before the office
 +// watched their lead, without re-reading every sidecar on every tick.
 +import * as fs from 'fs';
@@ -1274,6 +1274,30 @@ index 0000000..a736ff0
 +    expect(discover).toHaveBeenCalledTimes(2);
 +  });
 +
++  it('reads each sidecar once: a session with a live spawn re-scans every tick', () => {
++    const jsonlPath = seedSidecar('cached', 0);
++    const metaPath = jsonlPath.replace(/\.jsonl$/, '.meta.json');
++    expect(claudeTeamProvider.discoverTeammates(tmpRoot, LEAD_SESSION)[0].toolUseId).toBe(
++      'toolu_cached',
++    );
++    // Sidecars are written once at spawn; a re-read would pick this up.
++    fs.writeFileSync(metaPath, JSON.stringify({ agentType: 'x', toolUseId: 'toolu_changed' }));
++    expect(claudeTeamProvider.discoverTeammates(tmpRoot, LEAD_SESSION)[0].toolUseId).toBe(
++      'toolu_cached',
++    );
++  });
++
++  it('keeps looking for a sidecar that was not written yet', () => {
++    const jsonlPath = seedSidecar('pending', 0);
++    const metaPath = jsonlPath.replace(/\.jsonl$/, '.meta.json');
++    fs.writeFileSync(metaPath, '{"agentTy');
++    expect(claudeTeamProvider.discoverTeammates(tmpRoot, LEAD_SESSION)).toEqual([]);
++    fs.writeFileSync(metaPath, JSON.stringify({ agentType: 'x', toolUseId: 'toolu_pending' }));
++    expect(claudeTeamProvider.discoverTeammates(tmpRoot, LEAD_SESSION)[0].toolUseId).toBe(
++      'toolu_pending',
++    );
++  });
++
 +  it('adopts a spawn that starts writing after the first pass on the next pass', () => {
 +    vi.useFakeTimers({ toFake: ['Date'] });
 +    scan();
@@ -1360,6 +1384,32 @@ index 0000000..570683e
 +  expect(hasOurHook(other)).toBe(false);
 +  expect(await claudeProvider.areHooksInstalled()).toBe(false);
 +});
+diff --git a/server/__tests__/claudeTeamProvider.test.ts b/server/__tests__/claudeTeamProvider.test.ts
+index b87584a..aebfc78 100644
+--- a/server/__tests__/claudeTeamProvider.test.ts
++++ b/server/__tests__/claudeTeamProvider.test.ts
+@@ -1,6 +1,6 @@
+ import * as os from 'os';
+ import * as path from 'path';
+-import { afterEach, describe, expect, it } from 'vitest';
++import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+ 
+ import { claudeTeamProvider } from '../src/providers/hook/claude/claudeTeamProvider.js';
+ 
+@@ -77,7 +77,12 @@ describe('claudeTeamProvider', () => {
+ 
+   describe('discoverTeammates', () => {
+     const fsMod = require('fs') as typeof import('fs');
+-    const tmpRoot = path.join(os.tmpdir(), 'pixel-agents-discover-' + Date.now());
++    // A fresh dir per test: sidecars are cached by path (claude-monitor patch),
++    // and real sidecar paths are never reused.
++    let tmpRoot = '';
++    beforeEach(() => {
++      tmpRoot = fsMod.mkdtempSync(path.join(os.tmpdir(), 'pixel-agents-discover-'));
++    });
+ 
+     afterEach(() => {
+       try {
 diff --git a/server/__tests__/configPersistence.test.ts b/server/__tests__/configPersistence.test.ts
 index 62174ae..ca1ac99 100644
 --- a/server/__tests__/configPersistence.test.ts
@@ -2259,6 +2309,47 @@ index c0996f0..b3be682 100644
    }
  }
  
+diff --git a/server/src/providers/hook/claude/claudeTeamProvider.ts b/server/src/providers/hook/claude/claudeTeamProvider.ts
+index cad10c6..4b7c722 100644
+--- a/server/src/providers/hook/claude/claudeTeamProvider.ts
++++ b/server/src/providers/hook/claude/claudeTeamProvider.ts
+@@ -22,9 +22,17 @@ function sidecarPath(jsonlPath: string): string {
+ /** Parse a sidecar's metadata: `agentType` (required), plus `toolUseId`,
+  *  `description`, and `name` when present (background agents record the first
+  *  three; a NAMED teamless spawn additionally records `name`). */
+-function parseSidecarMeta(
+-  jsonlPath: string,
+-): { agentType: string; toolUseId?: string; description?: string; name?: string } | null {
++type SidecarMeta = { agentType: string; toolUseId?: string; description?: string; name?: string };
++
++/** Local patch (claude-monitor): parsed sidecars by transcript path. A sidecar
++ *  is written once at spawn, and a lead with a live spawn is re-scanned every
++ *  tick: a session with ~280 sub-agents re-read all their sidecars each second.
++ *  Unreadable ones are NOT cached -- the sidecar may not be written yet. */
++const sidecarMetaCache = new Map<string, SidecarMeta>();
++
++function parseSidecarMeta(jsonlPath: string): SidecarMeta | null {
++  const cached = sidecarMetaCache.get(jsonlPath);
++  if (cached) return cached;
+   const metaPath = sidecarPath(jsonlPath);
+   try {
+     const raw = fs.readFileSync(metaPath, 'utf-8');
+@@ -35,12 +43,14 @@ function parseSidecarMeta(
+       name?: unknown;
+     };
+     if (typeof data.agentType !== 'string') return null;
+-    return {
++    const meta: SidecarMeta = {
+       agentType: data.agentType,
+       toolUseId: typeof data.toolUseId === 'string' ? data.toolUseId : undefined,
+       description: typeof data.description === 'string' ? data.description : undefined,
+       name: typeof data.name === 'string' ? data.name : undefined,
+     };
++    sidecarMetaCache.set(jsonlPath, meta);
++    return meta;
+   } catch {
+     return null;
+   }
 diff --git a/server/vitest.config.ts b/server/vitest.config.ts
 index 8626f94..744f013 100644
 --- a/server/vitest.config.ts

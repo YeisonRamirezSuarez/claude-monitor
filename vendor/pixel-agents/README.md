@@ -53,7 +53,9 @@ Qué agrega el parche:
   `SessionEnd`, que falta en las cuentas sin hooks. Los subagentes que se lanzaron antes de que
   abriera la oficina se adoptan igual (transcript escrito en los últimos 3 min). Esa revisión lee
   todos los subagentes de la sesión, así que se hace cada 30 s por sesión y no en cada tick: en
-  cada tick eran ~700 lecturas de disco por segundo con unas pocas sesiones largas abiertas.
+  cada tick eran ~700 lecturas de disco por segundo con unas pocas sesiones largas abiertas. Los
+  `.meta.json` se leen una sola vez (se escriben al lanzar el subagente y no cambian): una sesión
+  con un subagente corriendo se revisa en cada tick y releía los ~280 de la sesión por segundo.
 - **Opciones de la oficina:** "Watch All Sessions", etiquetas siempre visibles y salas visibles se
   prenden en cada arranque (`cli.ts`; también son el valor por defecto en `configPersistence.ts`).
   Sin "Watch All Sessions" una PC sin los hooks aprobados no veía ninguna sesión, y la 0.19.0 lo
