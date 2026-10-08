@@ -51,7 +51,9 @@ Qué agrega el parche:
 - **Sesiones cerradas:** claude-monitor le pide a la oficina que cierre (el agente sale por la puerta)
   las sesiones que ya no están vivas en el registro; Pixel Agents sólo se enteraba por el hook
   `SessionEnd`, que falta en las cuentas sin hooks. Los subagentes que se lanzaron antes de que
-  abriera la oficina se adoptan igual (transcript escrito en los últimos 3 min).
+  abriera la oficina se adoptan igual (transcript escrito en los últimos 3 min). Esa revisión lee
+  todos los subagentes de la sesión, así que se hace cada 30 s por sesión y no en cada tick: en
+  cada tick eran ~700 lecturas de disco por segundo con unas pocas sesiones largas abiertas.
 - **Opciones de la oficina:** "Watch All Sessions", etiquetas siempre visibles y salas visibles se
   prenden en cada arranque (`cli.ts`; también son el valor por defecto en `configPersistence.ts`).
   Sin "Watch All Sessions" una PC sin los hooks aprobados no veía ninguna sesión, y la 0.19.0 lo

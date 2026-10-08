@@ -1142,6 +1142,150 @@ index 0000000..22bd6de
 +  fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ id, name: p.name }) + '\n');
 +}
 +console.log(`${Object.keys(PETS).length} pets written to ${OUT}`);
+diff --git a/server/__tests__/claudeMonitorAdoption.test.ts b/server/__tests__/claudeMonitorAdoption.test.ts
+new file mode 100644
+index 0000000..a736ff0
+--- /dev/null
++++ b/server/__tests__/claudeMonitorAdoption.test.ts
+@@ -0,0 +1,138 @@
++// claude-monitor patch: adopting sub-agents launched before the office
++// watched their lead, without re-reading every sidecar on every tick.
++import * as fs from 'fs';
++import * as os from 'os';
++import * as path from 'path';
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
++
++import { AgentStateStore } from '../src/agentStateStore.js';
++import {
++  scanForBackgroundAgentFiles,
++  setHookProvider as setFileWatcherHookProvider,
++  setSubagentWatch,
++  setTeamProvider,
++} from '../src/fileWatcher.js';
++import { claudeProvider } from '../src/providers/hook/claude/claude.js';
++import { claudeTeamProvider } from '../src/providers/hook/claude/claudeTeamProvider.js';
++import { SubagentWatch } from '../src/subagentWatch.js';
++import type { AgentState } from '../src/types.js';
++
++const LEAD_SESSION = 'lead-session-1';
++
++describe('claude-monitor: adoption of sub-agents launched before the office opened', () => {
++  let tmpRoot: string;
++  let agents: AgentStateStore;
++  let watch: SubagentWatch;
++
++  function lead(): AgentState {
++    return {
++      id: 1,
++      sessionId: LEAD_SESSION,
++      isExternal: true,
++      projectDir: tmpRoot,
++      jsonlFile: path.join(tmpRoot, `${LEAD_SESSION}.jsonl`),
++      fileOffset: 0,
++      lineBuffer: '',
++      activeToolIds: new Set(),
++      activeToolStatuses: new Map(),
++      activeToolNames: new Map(),
++      activeSubagentToolIds: new Map(),
++      activeSubagentToolNames: new Map(),
++      backgroundAgentToolIds: new Set(),
++      isWaiting: false,
++      permissionSent: false,
++      hadToolsInTurn: false,
++      lastDataAt: 0,
++      linesProcessed: 0,
++      seenUnknownRecordTypes: new Set(),
++      hookDelivered: false,
++      contextTokens: 0,
++      maxContextTokens: 200_000,
++    } as AgentState;
++  }
++
++  /** A sub-agent transcript + sidecar, last written `ageMs` ago. */
++  function seedSidecar(id: string, ageMs: number): string {
++    const dir = path.join(tmpRoot, LEAD_SESSION, 'subagents');
++    fs.mkdirSync(dir, { recursive: true });
++    const jsonlPath = path.join(dir, `agent-${id}.jsonl`);
++    fs.writeFileSync(jsonlPath, '');
++    fs.writeFileSync(
++      path.join(dir, `agent-${id}.meta.json`),
++      JSON.stringify({ agentType: 'general-purpose', toolUseId: `toolu_${id}` }),
++    );
++    const when = new Date(Date.now() - ageMs);
++    fs.utimesSync(jsonlPath, when, when);
++    return jsonlPath;
++  }
++
++  const scan = () =>
++    scanForBackgroundAgentFiles(
++      1,
++      agents,
++      { current: 100 },
++      new Map(),
++      new Map(),
++      new Map(),
++      new Map(),
++      () => {},
++    );
++
++  beforeEach(() => {
++    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-agents-adopt-'));
++    setFileWatcherHookProvider(claudeProvider);
++    setTeamProvider(claudeTeamProvider);
++    agents = new AgentStateStore();
++    watch = new SubagentWatch(agents);
++    setSubagentWatch(watch);
++    agents.set(1, lead());
++  });
++
++  afterEach(() => {
++    watch.dispose();
++    setSubagentWatch(null);
++    vi.restoreAllMocks();
++    vi.useRealTimers();
++    fs.rmSync(tmpRoot, { recursive: true, force: true });
++  });
++
++  it('watches a sidecar written in the last 3 min that the lead transcript never showed', () => {
++    const jsonlPath = seedSidecar('running', 10_000);
++    scan();
++    expect(watch.isWatching(jsonlPath)).toBe(true);
++  });
++
++  it('leaves alone a sidecar not written for more than 3 min', () => {
++    const jsonlPath = seedSidecar('finished', 10 * 60_000);
++    scan();
++    expect(watch.isWatching(jsonlPath)).toBe(false);
++  });
++
++  it('does not re-read the sidecars on every tick while the lead has no live spawns', () => {
++    seedSidecar('finished', 10 * 60_000);
++    const discover = vi.spyOn(claudeTeamProvider, 'discoverTeammates');
++    vi.useFakeTimers({ toFake: ['Date'] });
++
++    scan();
++    scan();
++    vi.advanceTimersByTime(29_000);
++    scan();
++    expect(discover).toHaveBeenCalledTimes(1);
++
++    vi.advanceTimersByTime(1_000);
++    scan();
++    expect(discover).toHaveBeenCalledTimes(2);
++  });
++
++  it('adopts a spawn that starts writing after the first pass on the next pass', () => {
++    vi.useFakeTimers({ toFake: ['Date'] });
++    scan();
++    const jsonlPath = seedSidecar('late', 0);
++    scan();
++    expect(watch.isWatching(jsonlPath)).toBe(false);
++
++    vi.advanceTimersByTime(30_000);
++    scan();
++    expect(watch.isWatching(jsonlPath)).toBe(true);
++  });
++});
 diff --git a/server/__tests__/claudeMonitorHooks.test.ts b/server/__tests__/claudeMonitorHooks.test.ts
 new file mode 100644
 index 0000000..570683e
@@ -1603,7 +1747,7 @@ index 373cc30..a29c417 100644
  };
  
 diff --git a/server/src/fileWatcher.ts b/server/src/fileWatcher.ts
-index adb55b4..5051d91 100644
+index adb55b4..bdb9589 100644
 --- a/server/src/fileWatcher.ts
 +++ b/server/src/fileWatcher.ts
 @@ -45,6 +45,7 @@ import {
@@ -1614,13 +1758,20 @@ index adb55b4..5051d91 100644
  import { pathsMatch } from './pathKey.js';
  import type { SubagentWatch } from './subagentWatch.js';
  import { cancelPermissionTimer, cancelWaitingTimer, clearAgentActivity } from './timerManager.js';
-@@ -790,6 +791,18 @@ export function scanForTeammateFiles(
+@@ -790,6 +791,25 @@ export function scanForTeammateFiles(
   *  foreground spawn tools (Agent run_in_background:false — same sidecar shape
   *  on current harnesses, closes with its tool_result). Sidecars matching any
   *  of these belong to the background-agent flow, not teammate discovery. */
 +/** claude-monitor patch: how recent a sub-agent transcript write must be to
 + *  count as a running spawn we missed the launch of. */
 +const RECENT_SPAWN_MS = 3 * 60_000;
++
++/** claude-monitor patch: how often a lead's sidecars are checked for spawns to
++ *  adopt. The check reads every sidecar of the lead (a .meta.json and a stat
++ *  each); on every tick, with a few long sessions open, that was ~700 sync fs
++ *  calls per second. A missed spawn still shows up well inside RECENT_SPAWN_MS. */
++const ADOPT_SCAN_MS = 30_000;
++const lastAdoptScan = new WeakMap<AgentState, number>();
 +
 +function writtenWithin(file: string, ms: number): boolean {
 +  try {
@@ -1633,7 +1784,7 @@ index adb55b4..5051d91 100644
  function liveSpawnToolIds(lead: AgentState): Set<string> {
    const ids = new Set(lead.backgroundAgentToolIds);
    for (const toolId of lead.activeToolIds) {
-@@ -838,10 +851,24 @@ export function scanForBackgroundAgentFiles(
+@@ -838,10 +858,29 @@ export function scanForBackgroundAgentFiles(
    if (!teamProvider) return;
    const lead = agents.get(leadId);
    if (!lead || !lead.sessionId || !lead.projectDir) return;
@@ -1643,17 +1794,22 @@ index adb55b4..5051d91 100644
 +
    const liveSpawnIds = liveSpawnToolIds(lead);
 -  if (liveSpawnIds.size === 0) return;
++  const adoptDue = Date.now() - (lastAdoptScan.get(lead) ?? 0) >= ADOPT_SCAN_MS;
++  if (liveSpawnIds.size === 0 && !adoptDue) return;
  
    const entries = teamProvider.discoverTeammates(lead.projectDir, lead.sessionId);
 +  // Local patch (claude-monitor): a spawn launched before this server started
 +  // watching the lead (the office opened later, or it restarted) never showed
 +  // up in the lead's parsed transcript, so its sub-agent stayed invisible for
 +  // its whole run. Adopt any sidecar transcript written to recently as live.
-+  for (const entry of entries) {
-+    if (!entry.toolUseId || liveSpawnIds.has(entry.toolUseId)) continue;
-+    if (!writtenWithin(entry.jsonlPath, RECENT_SPAWN_MS)) continue;
-+    lead.backgroundAgentToolIds.add(entry.toolUseId);
-+    liveSpawnIds.add(entry.toolUseId);
++  if (adoptDue) {
++    lastAdoptScan.set(lead, Date.now());
++    for (const entry of entries) {
++      if (!entry.toolUseId || liveSpawnIds.has(entry.toolUseId)) continue;
++      if (!writtenWithin(entry.jsonlPath, RECENT_SPAWN_MS)) continue;
++      lead.backgroundAgentToolIds.add(entry.toolUseId);
++      liveSpawnIds.add(entry.toolUseId);
++    }
 +  }
 +  if (liveSpawnIds.size === 0) return;
    for (const entry of entries) {
