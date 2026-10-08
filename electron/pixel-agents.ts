@@ -46,7 +46,9 @@ export function esperaReinicio(previa: number | null, corrioMs: number): number 
 
 /** Lo que tiene que estar para que el servidor arranque y sirva la página. */
 const completa = (dir: string) =>
-  ['.completa', join('dist', 'cli.js'), join('dist', 'webview', 'index.html')].every((f) => existsSync(join(dir, f)));
+  ['.completa', 'fs-sin-fuga.cjs', join('dist', 'cli.js'), join('dist', 'webview', 'index.html')].every((f) =>
+    existsSync(join(dir, f))
+  );
 
 /**
  * Deja `origen` copiado en `<base>/<versión>` y devuelve esa carpeta. No copia
@@ -93,7 +95,8 @@ export function urlOficina(): Promise<string> {
 
 function arrancar(ruta: string): Promise<string> {
   return new Promise<string>((ok, mal) => {
-    const hijo = spawn(process.execPath, [ruta], {
+    // `fs-sin-fuga.cjs` tapa una fuga de memoria del Node de Electron (ver ahí).
+    const hijo = spawn(process.execPath, ['--require', join(ruta, '..', '..', 'fs-sin-fuga.cjs'), ruta], {
       cwd: homedir(),
       // Con el pid de la app, el servidor se cierra solo si la app muere sin
       // pasar por `detenerOficina` (crash, Administrador de tareas).

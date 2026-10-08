@@ -15,6 +15,7 @@ async function armar() {
   const origen = join(dir, 'resources', 'pixel-agents');
   await mkdir(join(origen, 'dist', 'webview'), { recursive: true });
   await writeFile(join(origen, 'dist', 'cli.js'), 'cli');
+  await writeFile(join(origen, 'fs-sin-fuga.cjs'), '');
   await writeFile(join(origen, 'dist', 'webview', 'index.html'), 'v1');
   return { origen, base: join(dir, 'local', 'pixel-agents') };
 }
