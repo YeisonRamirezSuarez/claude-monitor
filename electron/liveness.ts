@@ -50,6 +50,10 @@ export type SesionViva = {
   pidDomain?: string;
   startedAt?: number;
   updatedAt?: number;
+  /** FILETIME del arranque: confirma que el pid no se recicló antes de matarlo (`matarSiEsElMismo`). */
+  procStart?: string;
+  /** La carpeta donde se encontró anotada: `claude stop` tiene que correr con ESE `CLAUDE_CONFIG_DIR`. */
+  configDir?: string;
 };
 
 /**
@@ -89,7 +93,9 @@ export function parseSesionViva(texto: string): SesionViva | null {
     cwd: typeof e.cwd === 'string' ? e.cwd : undefined,
     pidDomain: typeof e.pidDomain === 'string' ? e.pidDomain : undefined,
     startedAt: typeof e.startedAt === 'number' ? e.startedAt : undefined,
-    updatedAt: typeof e.updatedAt === 'number' ? e.updatedAt : undefined
+    updatedAt: typeof e.updatedAt === 'number' ? e.updatedAt : undefined,
+    // Versiones viejas lo anotan como número; la precisión perdida queda muy adentro de la tolerancia de `mismoInicio`.
+    procStart: typeof e.procStart === 'string' || typeof e.procStart === 'number' ? String(e.procStart) : undefined
   };
 }
 
@@ -103,6 +109,8 @@ export function lateTodavia(e: SesionViva, ahoraMs: number, ttlMs = TTL_LATIDO_M
 /** Cómo nombrarle al usuario lo que tiene tomada la conversación. Nada de
  *  `entrypoint` crudo: lo que necesita saber es qué ventana cerrar. */
 export function dondeEstaAbierta(e: SesionViva): string {
+  // `bg` la corre el daemon de Claude Code: cerrar la terminal que la lanzó no la termina.
+  if (e.kind === 'bg') return 'una sesión de Claude Code en segundo plano (sigue corriendo aunque cierres la terminal)';
   if (e.entrypoint === 'claude-desktop') return 'Claude Desktop';
   if (e.entrypoint === 'cli') return 'una terminal';
   return 'otro Claude Code';
@@ -185,7 +193,7 @@ export async function quienLaTiene(
       if (!entrada || entrada.sessionId !== sessionId) continue;
       if (!lateTodavia(entrada, ahoraMs)) continue;
       if (!(await procesoVivo(entrada.pid, entorno))) continue;
-      return entrada;
+      return { ...entrada, configDir };
     }
   }
   return null;

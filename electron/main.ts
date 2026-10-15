@@ -36,6 +36,7 @@ import { guardarApariencia, leerApariencias } from './apariencias';
 import { detenerOficina, urlOficina } from './pixel-agents';
 import { detenerRemoto, exigirSinTurno, iniciarRemoto, registrarIpcRemoto, soltarTomada } from './remoto';
 import { conCierre } from './remoto-formato';
+import { matarSiEsElMismo } from './tomar';
 import { readTranscript } from './transcript';
 import { readUsage } from './usage';
 import {
@@ -54,7 +55,12 @@ function handle<T>(channel: string, fn: (...args: any[]) => Promise<T>) {
     try {
       return { ok: true, data: await fn(...args) };
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      const codigo = (error as { codigo?: unknown } | null)?.codigo;
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        ...(typeof codigo === 'string' ? { codigo } : {})
+      };
     }
   });
 }
@@ -127,13 +133,31 @@ function registrosDe(session: SessionMeta, profiles: Profile[]): string[] {
  * los dos se entera del otro cuando corren con cuentas distintas (ver
  * `liveness.ts`). `consecuencia` es lo que pasaría de seguir, en los
  * términos del botón que se tocó.
+ *
+ * Una sesión en segundo plano (`/bg`) no tiene ventana que cerrar: la cuida el
+ * daemon de Claude Code. Con `detenerBg` se la para con `claude stop` y se
+ * sigue; sin él, el error lleva `codigo` para que la UI ofrezca ese botón.
  */
-async function exigirLibre(session: SessionMeta, profiles: Profile[], consecuencia: string): Promise<void> {
+async function exigirLibre(
+  session: SessionMeta,
+  profiles: Profile[],
+  consecuencia: string,
+  detenerBg = false
+): Promise<void> {
   const dueno = await quienLaTiene(registrosDe(session, profiles), session.id, session.entorno);
   if (!dueno) return;
-  throw new Error(
-    `Esta conversación la tiene abierta ${dondeEstaAbierta(dueno)} (proceso ${dueno.pid})` +
-      `${dueno.cwd ? ` en ${dueno.cwd}` : ''}. ${consecuencia} Cerrala ahí y volvé a tocar el botón.`
+  // shortcut: sólo Windows; `matarSiEsElMismo` no sabe confirmar un pid de una distro. Si aparecen bg en WSL, extenderlo.
+  const deFondo = dueno.kind === 'bg' && session.entorno.tipo !== 'wsl';
+  if (deFondo && detenerBg) return matarSiEsElMismo(dueno.pid, dueno.procStart, dueno.configDir);
+  const salida = deFondo
+    ? 'Detenela (con "Detener y abrir acá", o `claude stop`) y volvé a tocar el botón.'
+    : 'Cerrala ahí y volvé a tocar el botón.';
+  throw Object.assign(
+    new Error(
+      `Esta conversación la tiene abierta ${dondeEstaAbierta(dueno)} (proceso ${dueno.pid})` +
+        `${dueno.cwd ? ` en ${dueno.cwd}` : ''}. ${consecuencia} ${salida}`
+    ),
+    deFondo ? { codigo: 'en-segundo-plano' } : {}
   );
 }
 
@@ -308,13 +332,17 @@ async function carpetaDeTrabajo(cwd?: string, desde?: string, distro?: string): 
 /** El `claude` que abre la app. En Windows va con `--chrome`: sin la bandera
  *  la sesión no ve la extensión de Chrome aunque su puente esté armado (ver
  *  `chrome-host.ts`), y el usuario le pide usarla y contesta que no puede. En
- *  WSL no: la extensión corre en el Chrome de Windows y no llega a la distro. */
-const claudeCon = (p: Profile) => (p.entorno?.tipo === 'wsl' ? 'claude' : 'claude --chrome');
+ *  WSL no: la extensión corre en el Chrome de Windows y no llega a la distro.
+ *  Siempre en bypass: `defaultMode` no alcanza, porque `--resume` vuelve al modo
+ *  con que se guardó la sesión. */
+const claudeCon = (p: Profile) =>
+  p.entorno?.tipo === 'wsl' ? 'claude --dangerously-skip-permissions' : 'claude --chrome --dangerously-skip-permissions';
 
 /** Reanudar una sesión en una terminal nueva: lo usan la lista y el botón
  *  Reabrir del puente de Telegram (`remoto.ts`). */
-/** `extra`: argumentos ya validados que van después de `--resume` (el /model de Telegram); se citan igual. */
-const reanudarSesion = async (id: string, extra: string[] = []) => {
+/** `extra`: argumentos ya validados que van después de `--resume` (el /model de Telegram); se citan igual.
+ *  `detenerBg`: si la tiene una sesión en segundo plano, pararla antes (botón "Detener y abrir acá"). */
+const reanudarSesion = async (id: string, extra: string[] = [], detenerBg = false) => {
   exigirSinTurno(id);
   const { session } = await findSession(id);
   const { profiles, activeProfileId } = await allProfiles();
@@ -338,12 +366,14 @@ const reanudarSesion = async (id: string, extra: string[] = []) => {
   // CLAUDE_CONFIG_DIR, y Desktop —o una terminal de otra cuenta— anota en
   // otro. Sin esto, la terminal arrancaba encima y los dos escribían el
   // mismo transcript.
+  // El login antes: no parar una sesión de fondo para después no poder abrirla.
+  await requireLogin(target);
   await exigirLibre(
     session,
     profiles,
-    'Abrirla en otra terminal haría que los dos escriban el mismo transcript y se pisen: el "claude" de acá no ve al otro porque cada cuenta anota sus sesiones vivas en su propia carpeta.'
+    'Abrirla en otra terminal haría que los dos escriban el mismo transcript y se pisen: el "claude" de acá no ve al otro porque cada cuenta anota sus sesiones vivas en su propia carpeta.',
+    detenerBg
   );
-  await requireLogin(target);
   const citar = target.entorno?.tipo === 'wsl' ? shQuote : psQuote;
   const resto = extra.map((a) => ` ${citar(a)}`).join('');
   const comando = `${claudeCon(target)} --resume ${session.id}${resto}`;
@@ -615,7 +645,8 @@ function registerHandlers() {
   // transcript); la de la distro si es de WSL, porque ahí la activa puede ser
   // cualquier otra y el transcript sólo lo ve la cuenta de esa distro. Ver
   // `cuentaParaSesion`.
-  handle('sessions:resume', reanudarSesion);
+  // Desde la UI sólo el id y el permiso de parar: los `extra` no se aceptan del renderer.
+  handle('sessions:resume', (id: string, detenerBg?: unknown) => reanudarSesion(id, [], detenerBg === true));
   // Una cuenta recién creada apunta a un CLAUDE_CONFIG_DIR vacío: no tiene
   // sesiones ni proyectos, y sin esto no habría forma de crear la primera
   // desde la app. Abre `claude` (sin --resume) en la carpeta elegida.

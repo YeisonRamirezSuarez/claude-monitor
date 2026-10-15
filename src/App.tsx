@@ -28,6 +28,8 @@ export default function App() {
   const [tokensLoading, setTokensLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  // La sesión que bloqueó una sesión en segundo plano, con SU error: el botón sólo se ve mientras ese error está en pantalla.
+  const [deFondo, setDeFondo] = useState<{ id: string; error: string } | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   // El login en curso: el CLI ya abrió la autorización y espera el código.
@@ -110,11 +112,14 @@ export default function App() {
 
   // Reanudar es el mismo camino desde la tarjeta y desde el visor: abre la
   // terminal con la cuenta activa y avisa si la sesión viene compactada.
-  const resume = async (id: string) => {
+  const resume = async (id: string, detenerBg = false) => {
     setError('');
     setNotice('');
-    const result = await window.claudeMonitor.resumeSession(id);
-    if (!result.ok) return setError(result.error);
+    const result = await window.claudeMonitor.resumeSession(id, detenerBg);
+    if (!result.ok) {
+      setDeFondo(result.codigo === 'en-segundo-plano' ? { id, error: result.error } : null);
+      return setError(result.error);
+    }
     const compactada =
       result.data.compactions > 0
         ? `Esta sesión fue compactada ${result.data.compactions} ${result.data.compactions === 1 ? 'vez' : 'veces'}. ` +
@@ -431,7 +436,16 @@ export default function App() {
         <button className="primary oficina-toggle" onClick={() => window.claudeMonitor.abrirOficina()}>
           Oficina en vivo
         </button>
-        {error && <div className="error">{error}</div>}
+        {error && (
+          <div className="error">
+            {error}
+            {deFondo?.error === error && (
+              <button className="primary" onClick={() => resume(deFondo.id, true)}>
+                Detener y abrir acá
+              </button>
+            )}
+          </div>
+        )}
         {notice && <div className="notice">{notice}</div>}
         {pendingLogin && (
           <form

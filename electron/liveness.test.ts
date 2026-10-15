@@ -28,6 +28,14 @@ describe('parseSesionViva', () => {
     });
   });
 
+  // `matarSiEsElMismo` lo necesita como texto para BigInt, venga como venga.
+  it('procStart sale como texto, sea número o texto', () => {
+    expect(parseSesionViva(REAL)?.procStart).toMatch(/^1343329109783567\d\d$/);
+    expect(parseSesionViva('{"sessionId":"x","pid":1,"procStart":"134364642396428693"}')?.procStart).toBe(
+      '134364642396428693'
+    );
+  });
+
   // Adentro de `sessions/` hay `.key` y lo que el día de mañana se les ocurra:
   // un archivo que no se entiende se ignora, no tumba el panel.
   it('lo que no se entiende devuelve null, no lanza', () => {
@@ -79,6 +87,10 @@ describe('dondeEstaAbierta', () => {
       'Claude Desktop'
     );
     expect(dondeEstaAbierta({ sessionId: 'x', pid: 1, entrypoint: 'cli' })).toBe('una terminal');
+  });
+
+  it('una sesión en segundo plano no se confunde con una terminal', () => {
+    expect(dondeEstaAbierta({ sessionId: 'x', pid: 1, entrypoint: 'cli', kind: 'bg' })).toMatch(/segundo plano/);
   });
 
   it('un entrypoint nuevo no rompe el mensaje', () => {

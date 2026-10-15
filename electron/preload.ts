@@ -13,7 +13,7 @@ const api: ClaudeMonitorApi = {
   submitLoginCode: (id, code) => ipcRenderer.invoke('profiles:loginCode', id, code),
   cancelLogin: (id) => ipcRenderer.invoke('profiles:loginCancel', id),
   listSessions: () => ipcRenderer.invoke('sessions:list'),
-  resumeSession: (id) => ipcRenderer.invoke('sessions:resume', id),
+  resumeSession: (id, detenerBg) => ipcRenderer.invoke('sessions:resume', id, detenerBg === true),
   newSession: (cwd, desde, distro) => ipcRenderer.invoke('sessions:new', cwd, desde, distro),
   deleteSession: (id) => ipcRenderer.invoke('sessions:delete', id),
   readTranscript: (id) => ipcRenderer.invoke('sessions:transcript', id),

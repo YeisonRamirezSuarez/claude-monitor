@@ -7,7 +7,8 @@ export type EstadoRaiz =
   | { tipo: 'sin-config'; mensaje: string }
   | { tipo: 'sin-cli'; mensaje: string };
 
-export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
+/** `codigo` deja que la UI ofrezca una salida para un error puntual (ej. `en-segundo-plano`). */
+export type Result<T> = { ok: true; data: T } | { ok: false; error: string; codigo?: string };
 
 /** Dónde vive una instalación de Claude Code.
  *
@@ -294,7 +295,8 @@ export type ClaudeMonitorApi = {
   /** Reanuda con la cuenta ACTIVA: es la que consume los tokens. Devuelve
    *  cuántas veces se compactó — si es > 0, Claude arranca desde el último
    *  resumen y el historial previo no vuelve. */
-  resumeSession: (id: string) => Promise<Result<ResumeResult>>;
+  /** `detenerBg`: si la tiene una sesión en segundo plano, pararla (`claude stop`) y abrirla igual. */
+  resumeSession: (id: string, detenerBg?: boolean) => Promise<Result<ResumeResult>>;
   /** Abre una terminal nueva corriendo `claude` en `cwd` con la cuenta activa.
    *  Sin `cwd` pide la carpeta con el selector nativo, abriéndolo en `desde`
    *  si se pasa: así se llega a las carpetas de una distro —por su UNC
